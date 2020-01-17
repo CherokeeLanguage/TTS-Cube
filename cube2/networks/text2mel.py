@@ -22,7 +22,7 @@ import json
 import random
 
 sys.path.append('')
-from cube2.networks.modules import Attention, PostNet
+from cube2.networks.modules import Attention, PostNet, Mel2Style
 from os.path import exists
 
 
@@ -31,6 +31,7 @@ class Text2Mel(nn.Module):
                  decoder_layers=2, mgc_size=80, pframes=3, teacher_forcing=0.5):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 256
+        self.GST_SIZE = 100
 
         self.encodings = encodings
         self.teacher_forcing = teacher_forcing
@@ -52,7 +53,8 @@ class Text2Mel(nn.Module):
                                       nn.Linear(self.MGC_PROJ_SIZE, self.MGC_PROJ_SIZE), nn.ReLU(), nn.Dropout(0.5))
         self.encoder = nn.LSTM(512, encoder_size, encoder_layers, bias=True,
                                dropout=0 if encoder_layers == 1 else 0, bidirectional=True)
-        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, decoder_size, decoder_layers, bias=True,
+        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE + self.GST_SIZE, decoder_size, decoder_layers,
+                               bias=True,
                                dropout=0 if decoder_layers == 1 else 0,
                                bidirectional=False)
 
@@ -62,6 +64,8 @@ class Text2Mel(nn.Module):
         self.output_stop = nn.Sequential(nn.Linear(mgc_size * pframes, self.pframes), nn.Sigmoid())
         self.att = Attention(encoder_size, decoder_size)
         self.postnet = PostNet(mgc_size)
+
+        self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.GST_SIZE)
 
     def forward(self, input, gs_mgc=None):
         if gs_mgc is not None:
@@ -76,6 +80,16 @@ class Text2Mel(nn.Module):
                             tmp[iB, iFrame, zz] = gs_mgc[iB][index, zz]
 
             gs_mgc = torch.tensor(tmp, device=self._get_device(), dtype=torch.float)
+            _, style = self.mel2style(gs_mgc)
+        else:  # uniform distribution of style tokens
+            batch_size = len(input)
+            unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
+                                        device=self.dec2hid[0].weight.device.type, dtype=torch.long)
+            unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
+            a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
+            a = torch.tensor(a, device=self.dec2hid[0].weight.device.type).unsqueeze(0).unsqueeze(0).repeat(batch_size,
+                                                                                                            1, 1)
+            style = torch.bmm(a, unfolded_gst).squeeze(1)
         index = 0
         # input
         x = self._make_input(input)
@@ -84,7 +98,7 @@ class Text2Mel(nn.Module):
         encoder_output = encoder_output.permute(1, 0, 2)
 
         _, decoder_hidden = self.decoder(
-            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE + self.GST_SIZE),
                         device=self._get_device()))
         last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order), device=self._get_device())
         lst_output = []
@@ -108,7 +122,7 @@ class Text2Mel(nn.Module):
             #         if ii % 3 == 0:
             #             m_proj = torch.dropout(m_proj, 0.5, True)
 
-            decoder_input = torch.cat((att, m_proj), dim=1)
+            decoder_input = torch.cat((att, m_proj, style), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
             pre_hid = torch.cat((att.unsqueeze(1), decoder_output), dim=2)

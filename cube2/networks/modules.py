@@ -16,6 +16,7 @@
 
 import torch
 import torch.nn as nn
+import torch.functional as F
 
 
 class UpsampleNet(nn.Module):
@@ -169,3 +170,32 @@ class PostNet(nn.Module):
         x = x.permute(0, 2, 1)
         y = self.network(x).permute(0, 2, 1)
         return y
+
+
+class Mel2Style(nn.Module):
+    def __init__(self, num_mgc=80, gst_dim=100, num_gst=8, lstm_size=200, lstm_layers=1):
+        super(Mel2Style, self).__init__()
+        self.dec_hid_dim = lstm_size
+        self.num_gst = num_gst
+
+        self.gst = nn.Embedding(num_gst, gst_dim)
+        self.attn = nn.Linear(gst_dim + lstm_size, lstm_size)
+        self.v = nn.Parameter(torch.rand(lstm_size))
+        self.lstm = nn.LSTM(num_mgc, lstm_size, lstm_layers, batch_first=True)
+
+    def forward(self, mgc):
+        hidden, _ = self.lstm(mgc)
+        hidden = hidden[:, -1, :]
+        batch_size = hidden.shape[0]
+        src_len = self.num_gst
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
+        unfolded_gst = torch.tensor([[i for i in range(self.num_gst)] for _ in range(batch_size)],
+                                    device=hidden.device.type, dtype=torch.long)
+        encoder_outputs = torch.tanh(self.gst(unfolded_gst))
+        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
+        energy = energy.permute(0, 2, 1)
+        v = self.v.repeat(batch_size, 1).unsqueeze(1)
+        attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)
+        a = attention.unsqueeze(1)
+        weighted = torch.bmm(a, encoder_outputs).squeeze(1)
+        return attention, weighted
