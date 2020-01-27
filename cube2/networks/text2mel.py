@@ -27,11 +27,10 @@ from os.path import exists
 
 
 class Text2Mel(nn.Module):
-    def __init__(self, encodings, char_emb_size=100, encoder_size=256, encoder_layers=1, decoder_size=1024,
-                 decoder_layers=2, mgc_size=80, pframes=3, teacher_forcing=0.5):
+    def __init__(self, encodings, char_emb_size=100, encoder_size=256, encoder_layers=1, decoder_size=512,
+                 decoder_layers=2, mgc_size=80, pframes=5, teacher_forcing=0.0):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 256
-        self.GST_SIZE = 100
 
         self.encodings = encodings
         self.teacher_forcing = teacher_forcing
@@ -53,7 +52,7 @@ class Text2Mel(nn.Module):
                                       nn.Linear(self.MGC_PROJ_SIZE, self.MGC_PROJ_SIZE), nn.ReLU(), nn.Dropout(0.5))
         self.encoder = nn.LSTM(512, encoder_size, encoder_layers, bias=True,
                                dropout=0 if encoder_layers == 1 else 0, bidirectional=True)
-        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE + self.GST_SIZE, decoder_size, decoder_layers,
+        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, decoder_size, decoder_layers,
                                bias=True,
                                dropout=0 if decoder_layers == 1 else 0,
                                bidirectional=False)
@@ -65,9 +64,9 @@ class Text2Mel(nn.Module):
         self.att = Attention(encoder_size, decoder_size)
         self.postnet = PostNet(mgc_size)
 
-        self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.GST_SIZE)
+        self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=encoder_size * 2)
 
-    def forward(self, input, gs_mgc=None):
+    def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
             # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
@@ -80,15 +79,21 @@ class Text2Mel(nn.Module):
                             tmp[iB, iFrame, zz] = gs_mgc[iB][index, zz]
 
             gs_mgc = torch.tensor(tmp, device=self._get_device(), dtype=torch.float)
-            _, style = self.mel2style(gs_mgc)
+            gsts, style = self.mel2style(gs_mgc)
         else:  # uniform distribution of style tokens
             batch_size = len(input)
             unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
                                         device=self.dec2hid[0].weight.device.type, dtype=torch.long)
             unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
-            a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
-            a = torch.tensor(a, device=self.dec2hid[0].weight.device.type).unsqueeze(0).unsqueeze(0).repeat(batch_size,
-                                                                                                            1, 1)
+            # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
+            # a[2] = 0.8
+            if token is None:
+                a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
+            else:
+                a = [0, 0, 0, 0, 0, 0, 0, 0]
+                a[token] = 1
+            a = torch.tensor(a, device=self.dec2hid[0].weight.device.type, dtype=torch.float).unsqueeze(0).unsqueeze(
+                0).repeat(batch_size, 1, 1)
             style = torch.bmm(a, unfolded_gst).squeeze(1)
         index = 0
         # input
@@ -98,7 +103,7 @@ class Text2Mel(nn.Module):
         encoder_output = encoder_output.permute(1, 0, 2)
 
         _, decoder_hidden = self.decoder(
-            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE + self.GST_SIZE),
+            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
                         device=self._get_device()))
         last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order), device=self._get_device())
         lst_output = []
@@ -111,30 +116,20 @@ class Text2Mel(nn.Module):
 
             lst_att.append(att_vec.unsqueeze(1))
             m_proj = self.mgc_proj(last_mgc)
-            # if gs_mgc is not None:
-            #     m_proj = self.mgc_proj(last_mgc)
-            # else:
-            #     m_proj = last_mgc
-            #     ii = 0
-            #     for module in self.mgc_proj:
-            #         ii += 1
-            #         m_proj = module(m_proj)
-            #         if ii % 3 == 0:
-            #             m_proj = torch.dropout(m_proj, 0.5, True)
 
-            decoder_input = torch.cat((att, m_proj, style), dim=1)
+            decoder_input = torch.cat((att + style, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
             pre_hid = torch.cat((att.unsqueeze(1), decoder_output), dim=2)
             decoder_output = self.dec2hid(pre_hid)
             out_mgc = self.output_mgc(decoder_output)
-            out_stop = self.output_stop(decoder_output[:, :, :self.mgc_order * 3])
+            out_stop = self.output_stop(decoder_output[:, :, :self.mgc_order * self.pframes])
             for iFrame in range(self.pframes):
                 lst_output.append(out_mgc[:, :, iFrame * self.mgc_order:iFrame * self.mgc_order + self.mgc_order])
                 lst_stop.append(out_stop[:, :, iFrame])
             if gs_mgc is not None:
                 prob = random.random()
-                if prob > self.teacher_forcing:
+                if prob >= self.teacher_forcing:
                     last_mgc = gs_mgc[:, index, :]
                 else:
                     last_mgc = out_mgc[:, :, -self.mgc_order:].detach().squeeze(1)
@@ -252,10 +247,10 @@ def _eval(text2mel, dataset, params, mse_loss):
             sys.stderr.flush()
             x, mgc = dataset.get_batch(batch_size=params.batch_size)
             pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_stop, target_size = _make_batch(mgc, device=params.device)
+            target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
 
             num_tokens = [len(seq) for seq in x]
-            num_mgcs = [m.shape[0] // 3 for m in mgc]
+            num_mgcs = [m.shape[0] // params.pframes for m in mgc]
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
             loss_comb = mse_loss(pred_mgc.view(-1), target_mgc.view(-1)) + \
@@ -287,10 +282,10 @@ def _update_encodings(encodings, dataset):
             encodings.update(pi)
 
 
-def _make_batch(gs_mgc, device='cpu'):
+def _make_batch(gs_mgc, pframes, device='cpu'):
     max_len = max([mgc.shape[0] for mgc in gs_mgc])
-    if max_len % 3 != 0:
-        max_len = (max_len // 3) * 3
+    if max_len % pframes != 0:
+        max_len = (max_len // pframes) * pframes
     # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
     tmp_mgc = np.zeros((len(gs_mgc), max_len, gs_mgc[0].shape[1]))
     tmp_stop = np.zeros((len(gs_mgc), max_len))
@@ -328,11 +323,16 @@ def _compute_guided_attention(num_tokens, num_mgc, device='cpu'):
     return torch.tensor(target_probs, device=device)
 
 
+def weight_reset(m):
+    if isinstance(m, nn.LSTM) or isinstance(m, nn.Linear) or isinstance(m, nn.Embedding):
+        m.reset_parameters()
+
+
 def _start_train(params):
     from cube2.io_modules.dataset import Dataset, Encodings
     import tqdm
 
-    trainset = Dataset("data/processed/train")
+    trainset = Dataset("data/processed/train", max_wav_size=16000 * 12)
     devset = Dataset("data/processed/dev")
     sys.stdout.write('Found ' + str(len(trainset.files)) + ' training files and ' + str(
         len(devset.files)) + ' development files\n')
@@ -346,12 +346,14 @@ def _start_train(params):
     else:
         _update_encodings(encodings, trainset)
         encodings.store('data/text2mel.encodings')
-    text2mel = Text2Mel(encodings, teacher_forcing=params.teacher_forcing)
+    text2mel = Text2Mel(encodings, teacher_forcing=params.teacher_forcing, pframes=params.pframes)
     if params.resume:
         text2mel.load('data/text2mel.last')
     text2mel.to('cuda:0')
     optimizer_gen = torch.optim.Adam(text2mel.parameters(), lr=params.lr)
     text2mel.save('data/text2mel.last')
+
+    # text2mel.mel2style.apply(weight_reset)
 
     test_steps = 500
     global_step = 0
@@ -371,10 +373,10 @@ def _start_train(params):
             global_step += 1
             x, mgc = trainset.get_batch(batch_size=params.batch_size)
             pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_stop, target_size = _make_batch(mgc, device=params.device)
+            target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
 
             num_tokens = [len(seq) for seq in x]
-            num_mgcs = [m.shape[0] // 3 for m in mgc]
+            num_mgcs = [m.shape[0] // params.pframes for m in mgc]
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
 
@@ -473,6 +475,8 @@ if __name__ == '__main__':
                       help='Resume from previous checkpoint')
     parser.add_option("--use-gan", action='store_true', dest='use_gan',
                       help='Resume from previous checkpoint')
+    parser.add_option("--pframes", action='store', dest='pframes', default=5,
+                      help='Number of frames to predict at once (default=5)')
     parser.add_option("--synth-test", action="store_true", dest="test")
     parser.add_option("--device", action="store", dest="device", default='cuda:0')
     parser.add_option("--lr", action="store", dest="lr", default=2e-4, type=float, help='Learning rate (default=2e-4)')
@@ -483,6 +487,7 @@ if __name__ == '__main__':
                       help='Disable guided attention (monotonic)')
 
     (params, _) = parser.parse_args(sys.argv)
+
     if params.test:
         _test_synth(params)
     else:

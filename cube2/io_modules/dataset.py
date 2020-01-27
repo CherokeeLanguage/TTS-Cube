@@ -165,7 +165,7 @@ class DatasetIO:
 
 
 class Dataset:
-    def __init__(self, folder):
+    def __init__(self, folder, max_wav_size=-1):
         from os import listdir
         from os.path import isfile, join
         from os.path import exists
@@ -175,7 +175,12 @@ class Dataset:
         for file in train_files_tmp:
             base_name = file[:-4]
             if file[-4:] == '.txt' and base_name not in final_list:
-                final_list.append(join(folder, base_name))
+                if max_wav_size != -1:
+                    sr, data = scipy.io.wavfile.read(join(folder, file.replace('.txt', '.orig.wav')))
+                    if data.shape[0] < max_wav_size:
+                        final_list.append(join(folder, base_name))
+                else:
+                    final_list.append(join(folder, base_name))
                 # sys.stdout.write(base_name + '\n')
         self.files = final_list
 

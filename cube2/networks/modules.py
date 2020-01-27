@@ -173,17 +173,22 @@ class PostNet(nn.Module):
 
 
 class Mel2Style(nn.Module):
-    def __init__(self, num_mgc=80, gst_dim=100, num_gst=8, lstm_size=200, lstm_layers=1):
+    def __init__(self, num_mgc=80, gst_dim=100, num_gst=8, rnn_size=128, rnn_layers=1):
         super(Mel2Style, self).__init__()
-        self.dec_hid_dim = lstm_size
+        self.dec_hid_dim = rnn_size
         self.num_gst = num_gst
 
         self.gst = nn.Embedding(num_gst, gst_dim)
-        self.attn = nn.Linear(gst_dim + lstm_size, lstm_size)
-        self.v = nn.Parameter(torch.rand(lstm_size))
-        self.lstm = nn.LSTM(num_mgc, lstm_size, lstm_layers, batch_first=True)
+        self.attn = nn.Linear(gst_dim + rnn_size, rnn_size)
+        self.v = nn.Parameter(torch.rand(rnn_size))
+        self.lstm = nn.GRU(num_mgc, rnn_size, rnn_layers, batch_first=True)
 
     def forward(self, mgc):
+        # invert sequence - no pytorch function found
+        mgc_list = []
+        for ii in range(mgc.shape[1]):
+            mgc_list.append(mgc[:, mgc.shape[1] - ii - 1, :].unsqueeze(1))
+        mgc = torch.cat(mgc_list, dim=1)
         hidden, _ = self.lstm(mgc)
         hidden = hidden[:, -1, :]
         batch_size = hidden.shape[0]

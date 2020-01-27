@@ -61,7 +61,7 @@ def synthesize(params):
     dio = DatasetIO()
     encodings = Encodings()
     encodings.load('{0}.encodings'.format(params.text2mel))
-    text2mel = Text2Mel(encodings)
+    text2mel = Text2Mel(encodings, pframes=params.pframes)
     text2mel.load('{0}.best'.format(params.text2mel))
     text2mel.to(params.device)
     text2mel.eval()
@@ -90,7 +90,7 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file).read().strip()]
         start_text2mel = time.time()
-        mgc, _, stop, att = text2mel([text])
+        mgc, _, stop, att = text2mel([text], token=params.token)
         stop_text2mel = time.time()
 
     mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy())
@@ -189,6 +189,9 @@ if __name__ == '__main__':
                       help='test.wav')
     parser.add_option('--g2p', dest='g2p', action='store')
     parser.add_option("--temperature", action="store", dest="temperature", type='float', default=0.35)
+    parser.add_option("--token", action="store", dest="token", type=int, help='Token to use (0-7)')
+    parser.add_option("--pframes", action='store', dest='pframes', default=5,
+                      help='Number of frames to predict at once (default=5)')
 
     (params, _) = parser.parse_args(sys.argv)
 
