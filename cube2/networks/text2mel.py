@@ -27,7 +27,7 @@ from os.path import exists
 
 
 class Text2Mel(nn.Module):
-    def __init__(self, encodings, char_emb_size=100, encoder_size=256, encoder_layers=1, decoder_size=512,
+    def __init__(self, encodings, char_emb_size=100, encoder_size=128, encoder_layers=1, decoder_size=512,
                  decoder_layers=2, mgc_size=80, pframes=5, teacher_forcing=0.0):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 256
@@ -209,6 +209,8 @@ class DataLoader:
     def _read_next(self):
         if self._file_index == len(self._dataset.files):
             self._file_index = 0
+            import random
+            random.shuffle(self._dataset.files)
         file = self._dataset.files[self._file_index]
         mgc_file = file + ".mgc.npy"
         mgc = np.load(mgc_file)
@@ -238,7 +240,9 @@ class DataLoader:
 def _eval(text2mel, dataset, params, mse_loss):
     import tqdm
     text2mel.eval()
-    test_steps = 50
+    test_steps = len(dataset._dataset.files) // params.batch_size
+    if len(dataset._dataset.files) % params.batch_size != 0:
+        test_steps += 1
     with torch.no_grad():
         total_loss = 0.0
         progress = tqdm.tqdm(range(test_steps))
@@ -333,6 +337,8 @@ def _start_train(params):
     import tqdm
 
     trainset = Dataset("data/processed/train", max_wav_size=16000 * 12)
+    import random
+    random.shuffle(trainset.files)
     devset = Dataset("data/processed/dev")
     sys.stdout.write('Found ' + str(len(trainset.files)) + ' training files and ' + str(
         len(devset.files)) + ' development files\n')
