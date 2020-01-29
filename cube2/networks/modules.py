@@ -41,34 +41,6 @@ class UpsampleNet(nn.Module):
         return o_list
 
 
-class Attention(nn.Module):
-    def __init__(self, enc_hid_dim, dec_hid_dim):
-        super(Attention, self).__init__()
-
-        self.enc_hid_dim = enc_hid_dim
-        self.dec_hid_dim = dec_hid_dim
-
-        self.attn = nn.Linear((enc_hid_dim * 2) + dec_hid_dim, dec_hid_dim)
-        self.v = nn.Parameter(torch.rand(dec_hid_dim))
-
-    def forward(self, hidden, encoder_outputs):
-        # encoder_outputs = encoder_outputs.permute(1, 0, 2)
-        batch_size = encoder_outputs.shape[0]
-        src_len = encoder_outputs.shape[1]
-        hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
-
-        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
-        energy = energy.permute(0, 2, 1)
-        v = self.v.repeat(batch_size, 1).unsqueeze(1)
-        attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)
-
-        a = attention.unsqueeze(1)
-        weighted = torch.bmm(a, encoder_outputs)
-        weighted = weighted.squeeze(1)
-
-        return attention, weighted
-
-
 class Seq2Seq(nn.Module):
     def __init__(self, num_input_tokens, num_output_tokens, embedding_size=100, encoder_size=100, encoder_layers=2,
                  decoder_size=200, decoder_layers=2, pad_index=0, unk_index=1, stop_index=2):
@@ -146,19 +118,19 @@ class PostNet(nn.Module):
             nn.Conv1d(num_mels, filter_size, kernel_size, padding=kernel_size // 2),
             nn.BatchNorm1d(512),
             nn.Tanh(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.1),
             nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
             nn.BatchNorm1d(512),
             nn.Tanh(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.1),
             nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
             nn.BatchNorm1d(512),
             nn.Tanh(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.1),
             nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
             nn.BatchNorm1d(512),
             nn.Tanh(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.1),
             nn.Conv1d(filter_size, num_mels, kernel_size, padding=kernel_size // 2),
         )
         for ii in range((len(self.network) // 4)):
@@ -188,6 +160,8 @@ class Mel2Style(nn.Module):
         mgc_list = []
         for ii in range(mgc.shape[1]):
             mgc_list.append(mgc[:, mgc.shape[1] - ii - 1, :].unsqueeze(1))
+        # from ipdb import set_trace
+        # set_trace()
         mgc = torch.cat(mgc_list, dim=1)
         hidden, _ = self.lstm(mgc)
         hidden = hidden[:, -1, :]
@@ -203,4 +177,32 @@ class Mel2Style(nn.Module):
         attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)
         a = attention.unsqueeze(1)
         weighted = torch.bmm(a, encoder_outputs).squeeze(1)
+        return attention, weighted
+
+
+class Attention(nn.Module):
+    def __init__(self, enc_hid_dim, dec_hid_dim):
+        super(Attention, self).__init__()
+
+        self.enc_hid_dim = enc_hid_dim
+        self.dec_hid_dim = dec_hid_dim
+
+        self.attn = nn.Linear((enc_hid_dim * 2) + dec_hid_dim, dec_hid_dim)
+        self.v = nn.Parameter(torch.rand(dec_hid_dim))
+
+    def forward(self, hidden, encoder_outputs):
+        # encoder_outputs = encoder_outputs.permute(1, 0, 2)
+        batch_size = encoder_outputs.shape[0]
+        src_len = encoder_outputs.shape[1]
+        hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
+
+        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
+        energy = energy.permute(0, 2, 1)
+        v = self.v.repeat(batch_size, 1).unsqueeze(1)
+        attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)
+
+        a = attention.unsqueeze(1)
+        weighted = torch.bmm(a, encoder_outputs)
+        weighted = weighted.squeeze(1)
+
         return attention, weighted

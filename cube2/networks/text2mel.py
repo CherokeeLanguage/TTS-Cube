@@ -27,10 +27,11 @@ from os.path import exists
 
 
 class Text2Mel(nn.Module):
-    def __init__(self, encodings, char_emb_size=100, encoder_size=128, encoder_layers=1, decoder_size=512,
-                 decoder_layers=2, mgc_size=80, pframes=5, teacher_forcing=0.0):
+    def __init__(self, encodings, char_emb_size=100, encoder_size=128, encoder_layers=1, decoder_size=1000,
+                 decoder_layers=1, mgc_size=80, pframes=5, teacher_forcing=0.0):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 256
+        self.ATT_RNN_SIZE = 256
 
         self.encodings = encodings
         self.teacher_forcing = teacher_forcing
@@ -48,7 +49,8 @@ class Text2Mel(nn.Module):
                                        nn.ReLU(),
                                        nn.Dropout(0.5)
                                        )
-        self.mgc_proj = nn.Sequential(nn.Linear(mgc_size, self.MGC_PROJ_SIZE), nn.ReLU(), nn.Dropout(0.5),
+        self.mgc_proj = nn.Sequential(nn.Linear(mgc_size * self.pframes, self.MGC_PROJ_SIZE), nn.ReLU(),
+                                      nn.Dropout(0.5),
                                       nn.Linear(self.MGC_PROJ_SIZE, self.MGC_PROJ_SIZE), nn.ReLU(), nn.Dropout(0.5))
         self.encoder = nn.LSTM(512, encoder_size, encoder_layers, bias=True,
                                dropout=0 if encoder_layers == 1 else 0, bidirectional=True)
@@ -56,12 +58,16 @@ class Text2Mel(nn.Module):
                                bias=True,
                                dropout=0 if decoder_layers == 1 else 0,
                                bidirectional=False)
+        self.attention_rnn = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, self.ATT_RNN_SIZE, decoder_layers,
+                                     bias=True,
+                                     dropout=0 if decoder_layers == 1 else 0,
+                                     bidirectional=False)
 
         self.dec2hid = nn.Sequential(nn.Linear(decoder_size + encoder_size * 2, 500), nn.ReLU(), nn.Dropout(0.5))
         self.dropout = nn.Dropout(0.1)
         self.output_mgc = nn.Sequential(nn.Linear(500, mgc_size * pframes))
-        self.output_stop = nn.Sequential(nn.Linear(mgc_size * pframes, self.pframes), nn.Sigmoid())
-        self.att = Attention(encoder_size, decoder_size)
+        self.output_stop = nn.Sequential(nn.Linear(self.ATT_RNN_SIZE, self.pframes), nn.Sigmoid())
+        self.att = Attention(encoder_size, self.ATT_RNN_SIZE)
         self.postnet = PostNet(mgc_size)
 
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=encoder_size * 2)
@@ -70,9 +76,9 @@ class Text2Mel(nn.Module):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
             # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
-            tmp = np.zeros((len(gs_mgc), max_len // self.pframes, self.mgc_order))
-            for iFrame in range(max_len // self.pframes):
-                index = iFrame * self.pframes + self.pframes - 1
+            tmp = np.zeros((len(gs_mgc), (max_len // self.pframes) * self.pframes, self.mgc_order))
+            for iFrame in range((max_len // self.pframes) * self.pframes):
+                index = iFrame
                 for iB in range(len(gs_mgc)):
                     if index < gs_mgc[iB].shape[0]:
                         for zz in range(self.mgc_order):
@@ -101,48 +107,58 @@ class Text2Mel(nn.Module):
         lstm_input = self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
+        style = style.unsqueeze(1).expand_as(encoder_output)
+        encoder_output = encoder_output + style
 
         _, decoder_hidden = self.decoder(
             torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
                         device=self._get_device()))
-        last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order), device=self._get_device())
+        attn_output, attn_hidden = self.attention_rnn(
+            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+                        device=self._get_device()))
+        last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order * self.pframes), device=self._get_device())
         lst_output = []
         lst_stop = []
         lst_att = []
         index = 0
         prev_att_vec = None
         while True:
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+            att_vec, att = self.att(attn_output, encoder_output)
 
             lst_att.append(att_vec.unsqueeze(1))
             m_proj = self.mgc_proj(last_mgc)
 
-            decoder_input = torch.cat((att + style, m_proj), dim=1)
+            decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
+            attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
             pre_hid = torch.cat((att.unsqueeze(1), decoder_output), dim=2)
             decoder_output = self.dec2hid(pre_hid)
             out_mgc = self.output_mgc(decoder_output)
-            out_stop = self.output_stop(decoder_output[:, :, :self.mgc_order * self.pframes])
+            out_stop = self.output_stop(attn_output)
             for iFrame in range(self.pframes):
                 lst_output.append(out_mgc[:, :, iFrame * self.mgc_order:iFrame * self.mgc_order + self.mgc_order])
                 lst_stop.append(out_stop[:, :, iFrame])
             if gs_mgc is not None:
                 prob = random.random()
                 if prob >= self.teacher_forcing:
-                    last_mgc = gs_mgc[:, index, :]
+                    mgc_list = []
+                    for ii in range(self.pframes):
+                        mgc_list.append(gs_mgc[:, index + ii, :])
+                    last_mgc = torch.cat(mgc_list, dim=1)
                 else:
-                    last_mgc = out_mgc[:, :, -self.mgc_order:].detach().squeeze(1)
+
+                    last_mgc = out_mgc.detach().squeeze(1)
             else:
-                last_mgc = out_mgc[:, :, -self.mgc_order:].squeeze(1)
-            index += 1
+                last_mgc = out_mgc.squeeze(1)
+            index += self.pframes
             if gs_mgc is not None and index == gs_mgc.shape[1]:
                 break
             elif gs_mgc is None:
                 if any(out_stop[0][-1].detach().cpu().numpy() > 0.5):
                     break
                 # failsafe
-                if index > x.shape[1] * 5:
+                if index > x.shape[1] * 25:
                     break
         mgc = torch.cat(lst_output, dim=1)  # .view(len(input), -1, self.mgc_order)
         stop = torch.cat(lst_stop, dim=1)  # .view(len(input), -1)
@@ -252,13 +268,16 @@ def _eval(text2mel, dataset, params, mse_loss):
             x, mgc = dataset.get_batch(batch_size=params.batch_size)
             pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
             target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
+            target_mgc.requires_grad = False
+            target_stop.requires_grad = False
 
             num_tokens = [len(seq) for seq in x]
             num_mgcs = [m.shape[0] // params.pframes for m in mgc]
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
+                target_att.requires_grad = False
             loss_comb = mse_loss(pred_mgc.view(-1), target_mgc.view(-1)) + \
-                        mse_loss(pred_pre.view(-1), target_mgc.view(-1)) * 0.5
+                        mse_loss(pred_pre.view(-1), target_mgc.view(-1))
             if not params.disable_guided_attention:
                 loss_comb += (pred_att * target_att).mean()
             loss = loss_comb
@@ -380,11 +399,14 @@ def _start_train(params):
             x, mgc = trainset.get_batch(batch_size=params.batch_size)
             pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
             target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
+            target_mgc.requires_grad = False
+            target_stop.requires_grad = False
 
             num_tokens = [len(seq) for seq in x]
             num_mgcs = [m.shape[0] // params.pframes for m in mgc]
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
+                target_att.requires_grad = False
 
             lst_gs = []
             lst_pre_mgc = []
