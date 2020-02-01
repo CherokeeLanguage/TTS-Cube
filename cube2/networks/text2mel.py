@@ -22,7 +22,7 @@ import json
 import random
 
 sys.path.append('')
-from cube2.networks.modules import Attention, PostNet, Mel2Style
+from cube2.networks.modules import Attention, PostNet, Mel2Style, ConvNorm, LinearNorm
 from os.path import exists
 
 
@@ -39,19 +39,21 @@ class Text2Mel(nn.Module):
         self.mgc_order = mgc_size
         self.char_emb = nn.Embedding(len(self.encodings.char2int), char_emb_size, padding_idx=0)
         self.case_emb = nn.Embedding(4, 16, padding_idx=0)
-        self.char_conv = nn.Sequential(nn.Conv1d(char_emb_size + 16, 512, 5, padding=2),
+        self.char_conv = nn.Sequential(ConvNorm(char_emb_size + 16, 512, 5, padding=2, w_init_gain='relu'),
                                        nn.ReLU(),
                                        nn.Dropout(0.5),
-                                       nn.Conv1d(512, 512, 5, padding=2),
+                                       ConvNorm(512, 512, 5, padding=2, w_init_gain='relu'),
                                        nn.ReLU(),
                                        nn.Dropout(0.5),
-                                       nn.Conv1d(512, 512, 5, padding=2),
+                                       ConvNorm(512, 512, 5, padding=2, w_init_gain='relu'),
                                        nn.ReLU(),
                                        nn.Dropout(0.5)
                                        )
-        self.mgc_proj = nn.Sequential(nn.Linear(mgc_size * self.pframes, self.MGC_PROJ_SIZE), nn.ReLU(),
+        self.mgc_proj = nn.Sequential(LinearNorm(mgc_size * self.pframes, self.MGC_PROJ_SIZE, w_init_gain='relu'),
+                                      nn.ReLU(),
                                       nn.Dropout(0.5),
-                                      nn.Linear(self.MGC_PROJ_SIZE, self.MGC_PROJ_SIZE), nn.ReLU(), nn.Dropout(0.5))
+                                      LinearNorm(self.MGC_PROJ_SIZE, self.MGC_PROJ_SIZE, w_init_gain='relu'), nn.ReLU(),
+                                      nn.Dropout(0.5))
         self.encoder = nn.LSTM(512, encoder_size, encoder_layers, bias=True,
                                dropout=0 if encoder_layers == 1 else 0, bidirectional=True)
         self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, decoder_size, decoder_layers,
@@ -63,14 +65,14 @@ class Text2Mel(nn.Module):
                                      dropout=0 if decoder_layers == 1 else 0,
                                      bidirectional=False)
 
-        self.dec2hid = nn.Sequential(nn.Linear(decoder_size + encoder_size * 2, 500), nn.ReLU(), nn.Dropout(0.5))
+        self.dec2hid = nn.Sequential(LinearNorm(decoder_size + encoder_size * 2, 500), nn.ReLU(), nn.Dropout(0.5))
         self.dropout = nn.Dropout(0.1)
-        self.output_mgc = nn.Sequential(nn.Linear(500, mgc_size * pframes))
-        self.output_stop = nn.Sequential(nn.Linear(self.ATT_RNN_SIZE, self.pframes), nn.Sigmoid())
+        self.output_mgc = nn.Sequential(LinearNorm(500, mgc_size * pframes, w_init_gain='linear'))
+        self.output_stop = nn.Sequential(LinearNorm(self.ATT_RNN_SIZE, self.pframes, w_init_gain='sigmoid'),
+                                         nn.Sigmoid())
         self.att = Attention(encoder_size, self.ATT_RNN_SIZE)
         self.postnet = PostNet(mgc_size)
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=encoder_size * 2)
-        self.mel2fft = PostNet(mgc_size, output_size=513)
 
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
@@ -166,8 +168,7 @@ class Text2Mel(nn.Module):
         stop = torch.cat(lst_stop, dim=1)  # .view(len(input), -1)
         att = torch.cat(lst_att, dim=1)
         mgc_post = mgc + self.postnet(mgc)
-        fft = self.mel2fft(mgc)
-        return mgc_post, mgc, fft, stop, att
+        return mgc_post, mgc, stop, att
 
     def _correct_attention(self, att, att_vec, prev_att_vec, encoder_outputs):
         # TODO: add method for correcting skipped and reversed encoder_outputs
@@ -233,9 +234,7 @@ class DataLoader:
             random.shuffle(self._dataset.files)
         file = self._dataset.files[self._file_index]
         mgc_file = file + ".mgc.npy"
-        fft_file = file + ".fft.npy"
         mgc = np.load(mgc_file)
-        fft = np.load(fft_file)
         txt_file = file + ".txt"
         lab_file = file + ".lab"
         if exists(lab_file):
@@ -245,18 +244,16 @@ class DataLoader:
             txt = open(txt_file).read().strip()
             trans = [c for c in txt]
         self._file_index += 1
-        return trans, mgc, np.abs(fft)
+        return trans, mgc  # , np.abs(fft)
 
     def get_batch(self, batch_size, mini_batch_size=16, device='cuda:0'):
         batch_mgc = []
-        batch_fft = []
         batch_x = []
         while len(batch_x) < batch_size:
-            x, mgc, fft = self._read_next()
+            x, mgc = self._read_next()
             batch_x.append(x)
             batch_mgc.append(mgc)
-            batch_fft.append(fft)
-        return batch_x, batch_mgc, batch_fft
+        return batch_x, batch_mgc
         # return torch.tensor(batch_x, device=device, dtype=torch.float32), \
         #       torch.tensor(batch_mgc, device=device, dtype=torch.float32)
 
@@ -273,10 +270,10 @@ def _eval(text2mel, dataset, params, mse_loss):
         for step in progress:
             sys.stdout.flush()
             sys.stderr.flush()
-            x, mgc, fft = dataset.get_batch(batch_size=params.batch_size)
-            pred_mgc, pred_pre, pred_fft, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_fft, target_stop, target_size = _make_batch(mgc, fft, params.pframes,
-                                                                           device=params.device)
+            x, mgc = dataset.get_batch(batch_size=params.batch_size)
+            pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes,
+                                                               device=params.device)
 
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
@@ -287,8 +284,8 @@ def _eval(text2mel, dataset, params, mse_loss):
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
                 target_att.requires_grad = False
             loss_comb = mse_loss(pred_mgc.view(-1), target_mgc.view(-1)) + \
-                        mse_loss(pred_pre.view(-1), target_mgc.view(-1)) + \
-                        mse_loss(pred_fft.reshape(-1), target_fft.view(-1))
+                        mse_loss(pred_pre.view(-1), target_mgc.view(-1))
+
             if not params.disable_guided_attention:
                 loss_comb = loss_comb + (pred_att * target_att).mean()
             lss_comb = loss_comb.item()
@@ -315,13 +312,13 @@ def _update_encodings(encodings, dataset):
             encodings.update(pi)
 
 
-def _make_batch(gs_mgc, gs_fft, pframes, device='cpu'):
+def _make_batch(gs_mgc, pframes, device='cpu'):
     max_len = max([mgc.shape[0] for mgc in gs_mgc])
     if max_len % pframes != 0:
         max_len = (max_len // pframes) * pframes
     # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
     tmp_mgc = np.zeros((len(gs_mgc), max_len, gs_mgc[0].shape[1]))
-    tmp_fft = np.zeros((len(gs_fft), max_len, gs_fft[0].shape[1]))
+
     tmp_stop = np.zeros((len(gs_mgc), max_len))
     gs_size = [mgc.shape[0] for mgc in gs_mgc]
 
@@ -332,14 +329,12 @@ def _make_batch(gs_mgc, gs_fft, pframes, device='cpu'):
                 tmp_stop[iB, ii] = 0.0
                 for zz in range(tmp_mgc.shape[2]):
                     tmp_mgc[iB, ii, zz] = gs_mgc[iB][index, zz]
-                for zz in range(tmp_fft.shape[2]):
-                    tmp_fft[iB, ii, zz] = gs_fft[iB][index, zz]
+
             else:
                 tmp_stop[iB, ii] == 1.0
     gs_mgc = torch.tensor(tmp_mgc, device=device, dtype=torch.float)
-    gs_fft = torch.tensor(tmp_fft, device=device, dtype=torch.float)
     gs_stop = torch.tensor(tmp_stop, device=device, dtype=torch.float)
-    return gs_mgc, gs_fft, gs_stop, gs_size
+    return gs_mgc, gs_stop, gs_size
 
 
 def _compute_guided_attention(num_tokens, num_mgc, device='cpu'):
@@ -360,7 +355,7 @@ def _compute_guided_attention(num_tokens, num_mgc, device='cpu'):
 
 
 def weight_reset(m):
-    if isinstance(m, nn.LSTM) or isinstance(m, nn.Linear) or isinstance(m, nn.Embedding):
+    if isinstance(m, nn.LSTM) or isinstance(m, LinearNorm) or isinstance(m, nn.Embedding):
         m.reset_parameters()
 
 
@@ -409,12 +404,11 @@ def _start_train(params):
             sys.stdout.flush()
             sys.stderr.flush()
             global_step += 1
-            x, mgc, fft = trainset.get_batch(batch_size=params.batch_size)
-            pred_mgc, pred_pre, pred_fft, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_fft, target_stop, target_size = _make_batch(mgc,
-                                                                           fft,
-                                                                           params.pframes,
-                                                                           device=params.device)
+            x, mgc = trainset.get_batch(batch_size=params.batch_size)
+            pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            target_mgc, target_stop, target_size = _make_batch(mgc,
+                                                               params.pframes,
+                                                               device=params.device)
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
 
@@ -427,24 +421,17 @@ def _start_train(params):
             lst_gs = []
             lst_pre_mgc = []
             lst_post_mgc = []
-            lst_fft = []
-            lst_gs_fft = []
 
             for sz in target_size:
                 lst_gs.append(target_mgc[:, :sz, :])
-                lst_gs_fft.append(target_fft[:, :sz, :])
                 lst_pre_mgc.append(pred_pre[:, :sz, :])
                 lst_post_mgc.append(pred_mgc[:, :sz, :])
-                lst_fft.append(pred_fft[:, :sz, :])
 
             l_tar_mgc = torch.cat(lst_gs, dim=1)
             l_pre_mgc = torch.cat(lst_pre_mgc, dim=1)
             l_post_mgc = torch.cat(lst_post_mgc, dim=1)
-            l_fft = torch.cat(lst_fft, dim=1)
-            l_tar_fft = torch.cat(lst_gs_fft, dim=1)
             loss_comb = mse_loss(l_post_mgc.view(-1), l_tar_mgc.view(-1)) + \
-                        mse_loss(l_pre_mgc.view(-1), l_tar_mgc.view(-1)) + \
-                        mse_loss(l_fft.view(-1), l_tar_fft.view(-1))
+                        mse_loss(l_pre_mgc.view(-1), l_tar_mgc.view(-1))
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             if not params.disable_guided_attention:

@@ -29,7 +29,7 @@ class UpsampleNet(nn.Module):
         for scale in upsample_scales:
             total *= scale
         for s in range(total):
-            self.upsample_conv.append(nn.Sequential(nn.Linear(input_size, output_size), nn.ReLU()))
+            self.upsample_conv.append(nn.Sequential(LinearNorm(input_size, output_size), nn.ReLU()))
 
     def forward(self, x):
         x = torch.clamp(x, min=0, max=1)
@@ -51,7 +51,7 @@ class Seq2Seq(nn.Module):
         self.encoder = nn.LSTM(embedding_size, encoder_size, encoder_layers, dropout=0.33, bidirectional=True)
         self.decoder = nn.LSTM(encoder_size * 2 + embedding_size, decoder_size, decoder_layers, dropout=0.33)
         self.attention = Attention(encoder_size, decoder_size)
-        self.output = nn.Linear(decoder_size, num_output_tokens)
+        self.output = LinearNorm(decoder_size, num_output_tokens)
         self._PAD = pad_index
         self._UNK = unk_index
         self._EOS = stop_index
@@ -117,28 +117,24 @@ class PostNet(nn.Module):
         if output_size == None:
             output_size = num_mels
         self.network = nn.Sequential(
-            nn.Conv1d(num_mels, filter_size, kernel_size, padding=kernel_size // 2),
+            ConvNorm(num_mels, filter_size, kernel_size, padding=kernel_size // 2, w_init_gain='tanh'),
             nn.BatchNorm1d(512),
             nn.Tanh(),
             nn.Dropout(0.1),
-            nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
+            ConvNorm(filter_size, filter_size, kernel_size, padding=kernel_size // 2, w_init_gain='tanh'),
             nn.BatchNorm1d(512),
             nn.Tanh(),
             nn.Dropout(0.1),
-            nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
+            ConvNorm(filter_size, filter_size, kernel_size, padding=kernel_size // 2, w_init_gain='tanh'),
             nn.BatchNorm1d(512),
             nn.Tanh(),
             nn.Dropout(0.1),
-            nn.Conv1d(filter_size, filter_size, kernel_size, padding=kernel_size // 2),
+            ConvNorm(filter_size, filter_size, kernel_size, padding=kernel_size // 2, w_init_gain='tanh'),
             nn.BatchNorm1d(512),
             nn.Tanh(),
             nn.Dropout(0.1),
-            nn.Conv1d(filter_size, output_size, kernel_size, padding=kernel_size // 2),
+            ConvNorm(filter_size, output_size, kernel_size, padding=kernel_size // 2, w_init_gain='linear'),
         )
-        for ii in range((len(self.network) // 4)):
-            torch.nn.init.xavier_uniform_(
-                self.network[ii * 4].weight, gain=torch.nn.init.calculate_gain('tanh'))
-        torch.nn.init.xavier_uniform_(self.network[-1].weight, gain=torch.nn.init.calculate_gain('linear'))
 
     def forward(self, x):
         x = x.permute(0, 2, 1)
@@ -153,7 +149,7 @@ class Mel2Style(nn.Module):
         self.num_gst = num_gst
 
         self.gst = nn.Embedding(num_gst, gst_dim)
-        self.attn = nn.Linear(gst_dim + rnn_size, rnn_size)
+        self.attn = LinearNorm(gst_dim + rnn_size, rnn_size, w_init_gain='tanh')
         self.v = nn.Parameter(torch.rand(rnn_size))
         self.lstm = nn.GRU(num_mgc, rnn_size, rnn_layers, batch_first=True)
 
@@ -189,7 +185,7 @@ class Attention(nn.Module):
         self.enc_hid_dim = enc_hid_dim
         self.dec_hid_dim = dec_hid_dim
 
-        self.attn = nn.Linear((enc_hid_dim * 2) + dec_hid_dim, dec_hid_dim)
+        self.attn = LinearNorm((enc_hid_dim * 2) + dec_hid_dim, dec_hid_dim, w_init_gain='tanh')
         self.v = nn.Parameter(torch.rand(dec_hid_dim))
 
     def forward(self, hidden, encoder_outputs):
@@ -208,3 +204,37 @@ class Attention(nn.Module):
         weighted = weighted.squeeze(1)
 
         return attention, weighted
+
+
+class LinearNorm(torch.nn.Module):
+    def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
+        super(LinearNorm, self).__init__()
+        self.linear_layer = torch.nn.Linear(in_dim, out_dim, bias=bias)
+
+        torch.nn.init.xavier_uniform_(
+            self.linear_layer.weight,
+            gain=torch.nn.init.calculate_gain(w_init_gain))
+
+    def forward(self, x):
+        return self.linear_layer(x)
+
+
+class ConvNorm(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
+                 padding=None, dilation=1, bias=True, w_init_gain='linear'):
+        super(ConvNorm, self).__init__()
+        if padding is None:
+            assert (kernel_size % 2 == 1)
+            padding = int(dilation * (kernel_size - 1) / 2)
+
+        self.conv = torch.nn.Conv1d(in_channels, out_channels,
+                                    kernel_size=kernel_size, stride=stride,
+                                    padding=padding, dilation=dilation,
+                                    bias=bias)
+
+        torch.nn.init.xavier_uniform_(
+            self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+
+    def forward(self, signal):
+        conv_signal = self.conv(signal)
+        return conv_signal

@@ -29,7 +29,7 @@ def write_signal_to_file(signal, output_file, params):
     dio.write_wave(output_file, signal, params.target_sample_rate, dtype=signal.dtype)
 
 
-def _trim(mgc, fft, att, pframes):
+def _trim(mgc, att, pframes):
     mx = att.shape[0]
     count = 0
     for ii in range(mgc.shape[0]):
@@ -39,7 +39,7 @@ def _trim(mgc, fft, att, pframes):
             mx -= 9
             break
     mx = min(mx, mgc.shape[0])
-    return mgc[:mx], fft[:mx], att[:mx // pframes]
+    return mgc[:mx], att[:mx // pframes]
 
 
 def synthesize(params):
@@ -94,11 +94,11 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file).read().strip()]
         start_text2mel = time.time()
-        mgc, _, fft, stop, att = text2mel([text], token=params.token)
+        mgc, _, stop, att = text2mel([text], token=params.token)
         stop_text2mel = time.time()
 
-    mgc, fft, att = _trim(mgc[0].detach().cpu().numpy(), fft[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),
-                          params.pframes)
+    mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),
+                     params.pframes)
     if not params.use_gl:
         with torch.no_grad():
             start_cubenet = time.time()
@@ -123,18 +123,6 @@ def synthesize(params):
     from PIL import Image
     img = Image.fromarray(bitmap)
     img.save('{0}.mgc.png'.format(params.output))
-
-    bitmap = np.zeros((fft.shape[1], fft.shape[0], 3), dtype=np.uint8)
-    min_val = np.min(fft)
-    max_val = np.max(fft)
-    for x in range(fft.shape[0]):
-        for y in range(fft.shape[1]):
-            val = (fft[x, y] - min_val) / (max_val - min_val)
-            color = np.clip(val * 255, 0, 255)
-            bitmap[fft.shape[1] - y - 1, x] = [color, color, color]  # bitmap[y, x] = [color, color, color]
-    from PIL import Image
-    img = Image.fromarray(bitmap)
-    img.save('{0}.fft.png'.format(params.output))
 
     new_att = np.zeros((att.shape[1], att.shape[0], 3), dtype=np.uint8)
     for ii in range(att.shape[1]):
@@ -177,7 +165,7 @@ def quick_test(params):
         cubenet = None
     with torch.no_grad():
         start_text2mel = time.time()
-        mgc, _, fft, stop, att = text2mel([open(params.txt_file).read().strip()])
+        mgc, _, stop, att = text2mel([open(params.txt_file).read().strip()])
         stop_text2mel = time.time()
 
     import PIL.Image
