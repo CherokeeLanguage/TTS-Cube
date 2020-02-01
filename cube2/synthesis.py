@@ -29,7 +29,7 @@ def write_signal_to_file(signal, output_file, params):
     dio.write_wave(output_file, signal, params.target_sample_rate, dtype=signal.dtype)
 
 
-def _trim(mgc, att):
+def _trim(mgc, fft, att, pframes):
     mx = att.shape[0]
     count = 0
     for ii in range(mgc.shape[0]):
@@ -39,7 +39,7 @@ def _trim(mgc, att):
             mx -= 9
             break
     mx = min(mx, mgc.shape[0])
-    return mgc[:mx], att[:mx // 3]
+    return mgc[:mx], fft[:mx], att[:mx // pframes]
 
 
 def synthesize(params):
@@ -48,6 +48,7 @@ def synthesize(params):
     from cube2.io_modules.dataset import DatasetIO, Encodings
     from cube2.networks.text2mel import Text2Mel
     from cube2.networks.vocoder import CubeNet2
+    from cube2.io_modules.vocoder import MelVocoder
     from os.path import exists
     if params.g2p is not None:
         from cube2.networks.g2p import G2P
@@ -67,7 +68,10 @@ def synthesize(params):
     text2mel.eval()
     # from ipdb import set_trace
     # set_trace()
-    if params.model == 'single':
+    if params.use_gl:
+        cubenet = None
+        vocoder = MelVocoder()
+    elif params.model == 'single':
         cubenet = CubeNet2(upsample_scales_input=[4, 4, 4, 4], output_samples=1)
         cubenet.load('{0}-single.best'.format(params.cubenet))
         cubenet.to(params.device)
@@ -90,14 +94,21 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file).read().strip()]
         start_text2mel = time.time()
-        mgc, _, stop, att = text2mel([text], token=params.token)
+        mgc, _, fft, stop, att = text2mel([text], token=params.token)
         stop_text2mel = time.time()
 
-    mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy())
-    with torch.no_grad():
+    mgc, fft, att = _trim(mgc[0].detach().cpu().numpy(), fft[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),
+                          params.pframes)
+    if not params.use_gl:
+        with torch.no_grad():
+            start_cubenet = time.time()
+            wav = cubenet.synthesize(mgc, batch_size=64,
+                                     temperature=params.temperature)
+            stop_cubenet = time.time()
+
+    else:
         start_cubenet = time.time()
-        wav = cubenet.synthesize(mgc, batch_size=64,
-                                 temperature=params.temperature)
+        wav = vocoder.griffinlim(fft) * 32767
         stop_cubenet = time.time()
 
     synth = wav
@@ -112,6 +123,18 @@ def synthesize(params):
     from PIL import Image
     img = Image.fromarray(bitmap)
     img.save('{0}.mgc.png'.format(params.output))
+
+    bitmap = np.zeros((fft.shape[1], fft.shape[0], 3), dtype=np.uint8)
+    min_val = np.min(fft)
+    max_val = np.max(fft)
+    for x in range(fft.shape[0]):
+        for y in range(fft.shape[1]):
+            val = (fft[x, y] - min_val) / (max_val - min_val)
+            color = np.clip(val * 255, 0, 255)
+            bitmap[fft.shape[1] - y - 1, x] = [color, color, color]  # bitmap[y, x] = [color, color, color]
+    from PIL import Image
+    img = Image.fromarray(bitmap)
+    img.save('{0}.fft.png'.format(params.output))
 
     new_att = np.zeros((att.shape[1], att.shape[0], 3), dtype=np.uint8)
     for ii in range(att.shape[1]):
@@ -143,13 +166,18 @@ def quick_test(params):
     text2mel.load('{0}.best'.format(params.text2mel))
     text2mel.to(params.device)
     text2mel.eval()
-    cubenet = CubeNet()
-    cubenet.load('{0}'.format(params.cubenet))
-    cubenet.to(params.device)
-    cubenet.eval()
+    from cube2.io_modules.vocoder import MelVocoder
+    vocoder = MelVocoder()
+    if not params.use_gl:
+        cubenet = CubeNet()
+        cubenet.load('{0}'.format(params.cubenet))
+        cubenet.to(params.device)
+        cubenet.eval()
+    else:
+        cubenet = None
     with torch.no_grad():
         start_text2mel = time.time()
-        mgc, _, stop, att = text2mel([open(params.txt_file).read().strip()])
+        mgc, _, fft, stop, att = text2mel([open(params.txt_file).read().strip()])
         stop_text2mel = time.time()
 
     import PIL.Image
@@ -162,12 +190,13 @@ def quick_test(params):
             mgc[jj, mgc.shape[1] - ii - 1] = image[ii, jj, 0] / 255
 
     # mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy())
-    from ipdb import set_trace
-    set_trace()
     with torch.no_grad():
         start_cubenet = time.time()
-        wav = cubenet.synthesize(mgc, batch_size=64,
-                                 temperature=params.temperature)
+        if cubenet is not None:
+            wav = cubenet.synthesize(mgc, batch_size=64,
+                                     temperature=params.temperature)
+        else:
+            wav = vocoder.griffinlim(fft.detach.cpu()) * 32767
         stop_cubenet = time.time()
 
     synth = wav
@@ -190,8 +219,9 @@ if __name__ == '__main__':
     parser.add_option('--g2p', dest='g2p', action='store')
     parser.add_option("--temperature", action="store", dest="temperature", type='float', default=0.35)
     parser.add_option("--token", action="store", dest="token", type=int, help='Token to use (0-7)')
-    parser.add_option("--pframes", action='store', dest='pframes', default=5,
-                      help='Number of frames to predict at once (default=5)')
+    parser.add_option("--pframes", action='store', dest='pframes', default=3,
+                      help='Number of frames to predict at once (default=3)')
+    parser.add_option("--use-gl", action="store_true", dest="use_gl", help='Use GL reconstruction')
 
     (params, _) = parser.parse_args(sys.argv)
 

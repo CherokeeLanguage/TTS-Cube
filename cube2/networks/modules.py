@@ -112,8 +112,10 @@ class Seq2Seq(nn.Module):
 
 
 class PostNet(nn.Module):
-    def __init__(self, num_mels=80, kernel_size=5, filter_size=512):
+    def __init__(self, num_mels=80, kernel_size=5, filter_size=512, output_size=None):
         super(PostNet, self).__init__()
+        if output_size == None:
+            output_size = num_mels
         self.network = nn.Sequential(
             nn.Conv1d(num_mels, filter_size, kernel_size, padding=kernel_size // 2),
             nn.BatchNorm1d(512),
@@ -131,7 +133,7 @@ class PostNet(nn.Module):
             nn.BatchNorm1d(512),
             nn.Tanh(),
             nn.Dropout(0.1),
-            nn.Conv1d(filter_size, num_mels, kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(filter_size, output_size, kernel_size, padding=kernel_size // 2),
         )
         for ii in range((len(self.network) // 4)):
             torch.nn.init.xavier_uniform_(

@@ -31,7 +31,7 @@ class Text2Mel(nn.Module):
                  decoder_layers=1, mgc_size=80, pframes=5, teacher_forcing=0.0):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 256
-        self.ATT_RNN_SIZE = 256
+        self.ATT_RNN_SIZE = 1000
 
         self.encodings = encodings
         self.teacher_forcing = teacher_forcing
@@ -69,8 +69,8 @@ class Text2Mel(nn.Module):
         self.output_stop = nn.Sequential(nn.Linear(self.ATT_RNN_SIZE, self.pframes), nn.Sigmoid())
         self.att = Attention(encoder_size, self.ATT_RNN_SIZE)
         self.postnet = PostNet(mgc_size)
-
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=encoder_size * 2)
+        self.mel2fft = PostNet(mgc_size, output_size=513)
 
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
@@ -108,7 +108,7 @@ class Text2Mel(nn.Module):
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
         style = style.unsqueeze(1).expand_as(encoder_output)
-        encoder_output = encoder_output + style
+        encoder_output = encoder_output  # + style
 
         _, decoder_hidden = self.decoder(
             torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
@@ -123,6 +123,8 @@ class Text2Mel(nn.Module):
         index = 0
         prev_att_vec = None
         while True:
+            # from ipdb import set_trace
+            # set_trace()
             att_vec, att = self.att(attn_output, encoder_output)
 
             lst_att.append(att_vec.unsqueeze(1))
@@ -135,7 +137,7 @@ class Text2Mel(nn.Module):
             pre_hid = torch.cat((att.unsqueeze(1), decoder_output), dim=2)
             decoder_output = self.dec2hid(pre_hid)
             out_mgc = self.output_mgc(decoder_output)
-            out_stop = self.output_stop(attn_output)
+            out_stop = self.output_stop(attn_output.permute(1, 0, 2))
             for iFrame in range(self.pframes):
                 lst_output.append(out_mgc[:, :, iFrame * self.mgc_order:iFrame * self.mgc_order + self.mgc_order])
                 lst_stop.append(out_stop[:, :, iFrame])
@@ -163,7 +165,9 @@ class Text2Mel(nn.Module):
         mgc = torch.cat(lst_output, dim=1)  # .view(len(input), -1, self.mgc_order)
         stop = torch.cat(lst_stop, dim=1)  # .view(len(input), -1)
         att = torch.cat(lst_att, dim=1)
-        return mgc + self.postnet(mgc), mgc, stop, att
+        mgc_post = mgc + self.postnet(mgc)
+        fft = self.mel2fft(mgc)
+        return mgc_post, mgc, fft, stop, att
 
     def _correct_attention(self, att, att_vec, prev_att_vec, encoder_outputs):
         # TODO: add method for correcting skipped and reversed encoder_outputs
@@ -229,7 +233,9 @@ class DataLoader:
             random.shuffle(self._dataset.files)
         file = self._dataset.files[self._file_index]
         mgc_file = file + ".mgc.npy"
+        fft_file = file + ".fft.npy"
         mgc = np.load(mgc_file)
+        fft = np.load(fft_file)
         txt_file = file + ".txt"
         lab_file = file + ".lab"
         if exists(lab_file):
@@ -239,16 +245,18 @@ class DataLoader:
             txt = open(txt_file).read().strip()
             trans = [c for c in txt]
         self._file_index += 1
-        return trans, mgc
+        return trans, mgc, np.abs(fft)
 
     def get_batch(self, batch_size, mini_batch_size=16, device='cuda:0'):
         batch_mgc = []
+        batch_fft = []
         batch_x = []
         while len(batch_x) < batch_size:
-            x, mgc = self._read_next()
+            x, mgc, fft = self._read_next()
             batch_x.append(x)
             batch_mgc.append(mgc)
-        return batch_x, batch_mgc
+            batch_fft.append(fft)
+        return batch_x, batch_mgc, batch_fft
         # return torch.tensor(batch_x, device=device, dtype=torch.float32), \
         #       torch.tensor(batch_mgc, device=device, dtype=torch.float32)
 
@@ -265,9 +273,11 @@ def _eval(text2mel, dataset, params, mse_loss):
         for step in progress:
             sys.stdout.flush()
             sys.stderr.flush()
-            x, mgc = dataset.get_batch(batch_size=params.batch_size)
-            pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
+            x, mgc, fft = dataset.get_batch(batch_size=params.batch_size)
+            pred_mgc, pred_pre, pred_fft, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            target_mgc, target_fft, target_stop, target_size = _make_batch(mgc, fft, params.pframes,
+                                                                           device=params.device)
+
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
 
@@ -277,10 +287,10 @@ def _eval(text2mel, dataset, params, mse_loss):
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
                 target_att.requires_grad = False
             loss_comb = mse_loss(pred_mgc.view(-1), target_mgc.view(-1)) + \
-                        mse_loss(pred_pre.view(-1), target_mgc.view(-1))
+                        mse_loss(pred_pre.view(-1), target_mgc.view(-1)) + \
+                        mse_loss(pred_fft.reshape(-1), target_fft.view(-1))
             if not params.disable_guided_attention:
-                loss_comb += (pred_att * target_att).mean()
-            loss = loss_comb
+                loss_comb = loss_comb + (pred_att * target_att).mean()
             lss_comb = loss_comb.item()
             total_loss += lss_comb
 
@@ -305,12 +315,13 @@ def _update_encodings(encodings, dataset):
             encodings.update(pi)
 
 
-def _make_batch(gs_mgc, pframes, device='cpu'):
+def _make_batch(gs_mgc, gs_fft, pframes, device='cpu'):
     max_len = max([mgc.shape[0] for mgc in gs_mgc])
     if max_len % pframes != 0:
         max_len = (max_len // pframes) * pframes
     # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
     tmp_mgc = np.zeros((len(gs_mgc), max_len, gs_mgc[0].shape[1]))
+    tmp_fft = np.zeros((len(gs_fft), max_len, gs_fft[0].shape[1]))
     tmp_stop = np.zeros((len(gs_mgc), max_len))
     gs_size = [mgc.shape[0] for mgc in gs_mgc]
 
@@ -321,12 +332,14 @@ def _make_batch(gs_mgc, pframes, device='cpu'):
                 tmp_stop[iB, ii] = 0.0
                 for zz in range(tmp_mgc.shape[2]):
                     tmp_mgc[iB, ii, zz] = gs_mgc[iB][index, zz]
+                for zz in range(tmp_fft.shape[2]):
+                    tmp_fft[iB, ii, zz] = gs_fft[iB][index, zz]
             else:
                 tmp_stop[iB, ii] == 1.0
-
     gs_mgc = torch.tensor(tmp_mgc, device=device, dtype=torch.float)
+    gs_fft = torch.tensor(tmp_fft, device=device, dtype=torch.float)
     gs_stop = torch.tensor(tmp_stop, device=device, dtype=torch.float)
-    return gs_mgc, gs_stop, gs_size
+    return gs_mgc, gs_fft, gs_stop, gs_size
 
 
 def _compute_guided_attention(num_tokens, num_mgc, device='cpu'):
@@ -374,7 +387,7 @@ def _start_train(params):
     text2mel = Text2Mel(encodings, teacher_forcing=params.teacher_forcing, pframes=params.pframes)
     if params.resume:
         text2mel.load('data/text2mel.last')
-    text2mel.to('cuda:0')
+    text2mel.to(params.device)
     optimizer_gen = torch.optim.Adam(text2mel.parameters(), lr=params.lr)
     text2mel.save('data/text2mel.last')
 
@@ -396,9 +409,12 @@ def _start_train(params):
             sys.stdout.flush()
             sys.stderr.flush()
             global_step += 1
-            x, mgc = trainset.get_batch(batch_size=params.batch_size)
-            pred_mgc, pred_pre, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
-            target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes, device=params.device)
+            x, mgc, fft = trainset.get_batch(batch_size=params.batch_size)
+            pred_mgc, pred_pre, pred_fft, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            target_mgc, target_fft, target_stop, target_size = _make_batch(mgc,
+                                                                           fft,
+                                                                           params.pframes,
+                                                                           device=params.device)
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
 
@@ -411,21 +427,28 @@ def _start_train(params):
             lst_gs = []
             lst_pre_mgc = []
             lst_post_mgc = []
+            lst_fft = []
+            lst_gs_fft = []
 
             for sz in target_size:
                 lst_gs.append(target_mgc[:, :sz, :])
+                lst_gs_fft.append(target_fft[:, :sz, :])
                 lst_pre_mgc.append(pred_pre[:, :sz, :])
                 lst_post_mgc.append(pred_mgc[:, :sz, :])
+                lst_fft.append(pred_fft[:, :sz, :])
 
             l_tar_mgc = torch.cat(lst_gs, dim=1)
             l_pre_mgc = torch.cat(lst_pre_mgc, dim=1)
             l_post_mgc = torch.cat(lst_post_mgc, dim=1)
+            l_fft = torch.cat(lst_fft, dim=1)
+            l_tar_fft = torch.cat(lst_gs_fft, dim=1)
             loss_comb = mse_loss(l_post_mgc.view(-1), l_tar_mgc.view(-1)) + \
-                        mse_loss(l_pre_mgc.view(-1), l_tar_mgc.view(-1))
+                        mse_loss(l_pre_mgc.view(-1), l_tar_mgc.view(-1)) + \
+                        mse_loss(l_fft.view(-1), l_tar_fft.view(-1))
 
-            loss_comb += bce_loss(pred_stop.view(-1), target_stop.view(-1))
+            loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             if not params.disable_guided_attention:
-                loss_comb += (pred_att * target_att).mean()
+                loss_comb = loss_comb + (pred_att * target_att).mean()
             loss = loss_comb
             optimizer_gen.zero_grad()
             loss.backward()
@@ -503,8 +526,8 @@ if __name__ == '__main__':
                       help='Resume from previous checkpoint')
     parser.add_option("--use-gan", action='store_true', dest='use_gan',
                       help='Resume from previous checkpoint')
-    parser.add_option("--pframes", action='store', dest='pframes', default=5,
-                      help='Number of frames to predict at once (default=5)')
+    parser.add_option("--pframes", action='store', dest='pframes', default=3,
+                      help='Number of frames to predict at once (default=3)')
     parser.add_option("--synth-test", action="store_true", dest="test")
     parser.add_option("--device", action="store", dest="device", default='cuda:0')
     parser.add_option("--lr", action="store", dest="lr", default=2e-4, type=float, help='Learning rate (default=2e-4)')

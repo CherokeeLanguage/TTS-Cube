@@ -54,9 +54,9 @@ class MelVocoder:
 
     def melspectrogram(self, y, sample_rate, num_mels, use_preemphasis=False):
         if use_preemphasis:
-             pre_y = self.preemphasis(y)
+            pre_y = self.preemphasis(y)
         else:
-             pre_y=y
+            pre_y = y
         D = self._stft(pre_y, sample_rate)
         S = self._amp_to_db(self._linear_to_mel(np.abs(D), sample_rate, num_mels))
         return self._normalize(S).transpose()
@@ -95,7 +95,7 @@ class MelVocoder:
         reference = 20.0
         return 20 * np.log10(np.maximum(1e-5, x)) - reference
 
-    def griffinlim(self, spectrogram, n_iter=100, sample_rate=16000):
+    def griffinlim(self, spectrogram, n_iter=50, sample_rate=16000):
         n_fft, hop_length, win_length = self._stft_parameters(sample_rate)
         return self._griffinlim(spectrogram.transpose(), n_iter=n_iter, n_fft=n_fft, hop_length=hop_length)
 

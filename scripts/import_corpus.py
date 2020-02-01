@@ -46,6 +46,7 @@ if __name__ == '__main__':
         data = (data / m) * 0.999
         return data
 
+
     def array2file(a, filename):
         np.save(filename, a)
 
@@ -195,16 +196,20 @@ if __name__ == '__main__':
             data, sample_rate = dio.read_wave(join(base_folder, wav_name), sample_rate=params.target_sample_rate)
             data = _normalize(data)
             mgc = vocoder.melspectrogram(data, sample_rate=params.target_sample_rate, num_mels=params.mgc_order)
+            fft = vocoder.fft(data, sample_rate=params.target_sample_rate)
             # SPECT
             render_spectrogram(mgc, join('data/processed/train', tgt_spc_name))
             if params.prefix is None:
                 dio.write_wave(join('data/processed/train', base_name + '.orig.wav'), data, sample_rate)
                 array2file(mgc, join('data/processed/train', base_name + '.mgc'))
+                array2file(fft, join('data/processed/train', base_name + '.fft'))
             else:
                 tgt_wav_name = params.prefix + "_{:05d}".format(total_files) + '.orig.wav'
                 tgt_mgc_name = params.prefix + "_{:05d}".format(total_files) + '.mgc'
+                tgt_fft_name = params.prefix + "_{:05d}".format(total_files) + '.fft'
                 dio.write_wave(join('data/processed/train', tgt_wav_name), data, sample_rate)
                 array2file(mgc, join('data/processed/train', tgt_mgc_name))
+                array2file(fft, join('data/processed/train', tgt_fft_name))
 
         sys.stdout.write('\n')
         base_folder = params.dev_folder
@@ -238,16 +243,20 @@ if __name__ == '__main__':
             data, sample_rate = dio.read_wave(join(base_folder, wav_name), sample_rate=params.target_sample_rate)
             data = _normalize(data)
             mgc = vocoder.melspectrogram(data, sample_rate=params.target_sample_rate, num_mels=params.mgc_order)
+            fft = vocoder.fft(data, sample_rate=params.target_sample_rate)
             # SPECT
             render_spectrogram(mgc, join('data/processed/dev', tgt_spc_name))
             if params.prefix is None:
                 dio.write_wave(join('data/processed/dev', base_name + '.orig.wav'), data, sample_rate)
                 array2file(mgc, join('data/processed/dev', base_name + '.mgc'))
+                array2file(fft, join('data/processed/dev', base_name + '.fft'))
             else:
                 tgt_wav_name = params.prefix + "_{:05d}".format(total_files) + '.orig.wav'
                 tgt_mgc_name = params.prefix + "_{:05d}".format(total_files) + '.mgc'
+                tgt_fft_name = params.prefix + "_{:05d}".format(total_files) + '.fft'
                 dio.write_wave(join('data/processed/dev', tgt_wav_name), data, sample_rate)
                 array2file(mgc, join('data/processed/dev', tgt_mgc_name))
+                array2file(fft, join('data/processed/dev', tgt_fft_name))
 
         sys.stdout.write('\n')
 
