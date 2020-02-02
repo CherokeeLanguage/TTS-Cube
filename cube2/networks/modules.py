@@ -51,7 +51,7 @@ class Seq2Seq(nn.Module):
         self.encoder = nn.LSTM(embedding_size, encoder_size, encoder_layers, dropout=0.33, bidirectional=True)
         self.decoder = nn.LSTM(encoder_size * 2 + embedding_size, decoder_size, decoder_layers, dropout=0.33)
         self.attention = Attention(encoder_size, decoder_size)
-        self.output = LinearNorm(decoder_size, num_output_tokens)
+        self.output = nn.Linear(decoder_size, num_output_tokens)
         self._PAD = pad_index
         self._UNK = unk_index
         self._EOS = stop_index
@@ -108,6 +108,9 @@ class Seq2Seq(nn.Module):
         torch.save(self.state_dict(), path)
 
     def load(self, path):
+        # from ipdb import set_trace
+        # set_trace()
+        # tmp = torch.load(path, map_location='cpu')
         self.load_state_dict(torch.load(path, map_location='cpu'))
 
 
@@ -211,7 +214,7 @@ class LinearNorm(torch.nn.Module):
         super(LinearNorm, self).__init__()
         self.linear_layer = torch.nn.Linear(in_dim, out_dim, bias=bias)
 
-        torch.nn.init.xavier_uniform_(
+        torch.nn.init.xavier_normal_(
             self.linear_layer.weight,
             gain=torch.nn.init.calculate_gain(w_init_gain))
 
@@ -232,7 +235,7 @@ class ConvNorm(torch.nn.Module):
                                     padding=padding, dilation=dilation,
                                     bias=bias)
 
-        torch.nn.init.xavier_uniform_(
+        torch.nn.init.xavier_normal_(
             self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
 
     def forward(self, signal):

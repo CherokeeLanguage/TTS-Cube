@@ -94,7 +94,7 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file).read().strip()]
         start_text2mel = time.time()
-        mgc, _, stop, att = text2mel([text], token=params.token)
+        mgc, stop, att = text2mel([text], token=params.token)
         stop_text2mel = time.time()
 
     mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),
@@ -108,7 +108,9 @@ def synthesize(params):
 
     else:
         start_cubenet = time.time()
-        wav = vocoder.griffinlim(fft) * 32767
+        import librosa
+        S = librosa.feature.inverse.mel_to_stft(mgc.transpose(), power=1, sr=16000, n_fft=1024)
+        wav = librosa.griffinlim(S, hop_length=256, win_length=1024) * 32767
         stop_cubenet = time.time()
 
     synth = wav
@@ -184,7 +186,12 @@ def quick_test(params):
             wav = cubenet.synthesize(mgc, batch_size=64,
                                      temperature=params.temperature)
         else:
-            wav = vocoder.griffinlim(fft.detach.cpu()) * 32767
+            # wav = vocoder.griffinlim(fft.detach.cpu()) * 32767
+            from ipdb import set_trace
+            set_trace()
+            import librosa
+            S = librosa.feature.inverse.mel_to_stft(mgc)
+            wav = librosa.griffinlim(S)
         stop_cubenet = time.time()
 
     synth = wav
