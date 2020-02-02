@@ -119,7 +119,7 @@ class Text2Mel(nn.Module):
             att_vec, att = self.att(attn_output, encoder_output)
 
             lst_att.append(att_vec.unsqueeze(1))
-            m_proj = self.mgc_proj(last_mgc)
+            m_proj = torch.tanh(self.mgc_proj(last_mgc))
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
@@ -206,7 +206,7 @@ class Text2Mel(nn.Module):
 
 
 class DataLoader:
-    def __init__(self, dataset):
+    def __init__(self, dataset, auto_shuffle=True):
         from cube2.io_modules.dataset import DatasetIO
         self._dio = DatasetIO()
         self._dataset = dataset
@@ -214,12 +214,14 @@ class DataLoader:
         self._frame_index = 0
         self._cur_x = []
         self._cur_mgc = []
+        self.auto_shuffle = auto_shuffle
 
     def _read_next(self):
         if self._file_index == len(self._dataset.files):
             self._file_index = 0
-            import random
-            random.shuffle(self._dataset.files)
+            if self.auto_shuffle:
+                import random
+                random.shuffle(self._dataset.files)
         file = self._dataset.files[self._file_index]
         mgc_file = file + ".mgc.npy"
         mgc = np.load(mgc_file)
@@ -246,7 +248,19 @@ class DataLoader:
         #       torch.tensor(batch_mgc, device=device, dtype=torch.float32)
 
 
-def _eval(text2mel, dataset, params, mse_loss):
+def _render_spec(mgc, path):
+    bitmap = np.zeros((mgc.shape[1], mgc.shape[0], 3), dtype=np.uint8)
+    for x in range(mgc.shape[0]):
+        for y in range(mgc.shape[1]):
+            val = mgc[x, y]
+            color = np.clip(val * 255, 0, 255)
+            bitmap[mgc.shape[1] - y - 1, x] = [color, color, color]  # bitmap[y, x] = [color, color, color]
+    from PIL import Image
+    img = Image.fromarray(bitmap)
+    img.save(path)
+
+
+def _eval(text2mel, dataset, params, loss_func):
     import tqdm
     text2mel.eval()
     test_steps = len(dataset._dataset.files) // params.batch_size
@@ -256,9 +270,10 @@ def _eval(text2mel, dataset, params, mse_loss):
         total_loss = 0.0
         progress = tqdm.tqdm(range(test_steps))
         for step in progress:
+            prg = step * params.batch_size
             sys.stdout.flush()
             sys.stderr.flush()
-            x, mgc = dataset.get_batch(batch_size=params.batch_size)
+            x, mgc = dataset.get_batch(batch_size=min(params.batch_size, len(dataset._dataset.files) - prg))
             pred_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
             target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes,
                                                                device=params.device)
@@ -266,12 +281,15 @@ def _eval(text2mel, dataset, params, mse_loss):
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
 
+            # from ipdb import set_trace
+            # set_trace()
+
             num_tokens = [len(seq) for seq in x]
             num_mgcs = [m.shape[0] // params.pframes for m in mgc]
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
                 target_att.requires_grad = False
-            loss_comb = mse_loss(pred_mgc.view(-1), target_mgc.view(-1))
+            loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1))
 
             if not params.disable_guided_attention:
                 loss_comb = loss_comb + (pred_att * target_att).mean()
@@ -359,7 +377,7 @@ def _start_train(params):
     epoch = 1
     patience_left = params.patience
     trainset = DataLoader(trainset)
-    devset = DataLoader(devset)
+    devset = DataLoader(devset, auto_shuffle=False)
     encodings = Encodings()
     if params.resume:
         encodings.load('data/text2mel.encodings')
@@ -381,7 +399,8 @@ def _start_train(params):
     bce_loss = torch.nn.BCELoss()
     abs_loss = torch.nn.L1Loss(reduction='mean')
     mse_loss = torch.nn.MSELoss(reduction='mean')
-    best_gloss = _eval(text2mel, devset, params, mse_loss)
+    loss_func = abs_loss
+    best_gloss = _eval(text2mel, devset, params, loss_func)
     sys.stdout.write('Devset loss={0}\n'.format(best_gloss))
     while patience_left > 0:
         text2mel.train()
@@ -414,7 +433,7 @@ def _start_train(params):
 
             l_tar_mgc = torch.cat(lst_gs, dim=1)
             l_post_mgc = torch.cat(lst_post_mgc, dim=1)
-            loss_comb = mse_loss(l_post_mgc.view(-1), l_tar_mgc.view(-1))
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1))
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             if not params.disable_guided_attention:
@@ -429,7 +448,7 @@ def _start_train(params):
 
             progress.set_description('LOSS={0:.4}'.format(lss_comb))
 
-        g_loss = _eval(text2mel, devset, params, mse_loss)
+        g_loss = _eval(text2mel, devset, params, loss_func)
         sys.stdout.flush()
         sys.stderr.flush()
         sys.stdout.write(
