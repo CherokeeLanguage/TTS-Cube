@@ -109,8 +109,10 @@ def synthesize(params):
     else:
         start_cubenet = time.time()
         import librosa
-        S = librosa.feature.inverse.mel_to_stft(mgc.transpose(), power=1, sr=16000, n_fft=1024)
-        wav = librosa.griffinlim(S, hop_length=256, win_length=1024) * 32767
+        nmgc = vocoder._denormalize(mgc)
+        nmgc = vocoder._db_to_amp(nmgc)
+        S = librosa.feature.inverse.mel_to_stft(nmgc.transpose(), power=1, sr=16000, n_fft=1024)
+        wav = librosa.griffinlim(S, n_iter=50, hop_length=256, win_length=1024) * 32767
         stop_cubenet = time.time()
 
     synth = wav

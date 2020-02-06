@@ -91,6 +91,16 @@ class MelVocoder:
         win_length = n_fft
         return n_fft, hop_length, win_length
 
+    def _denormalize(self, S):
+        min_level_db = -100.0
+        # return np.clip((S - min_level_db) / -min_level_db, 0, 1)
+        return S * (-min_level_db) + min_level_db
+
+    def _db_to_amp(self, x):
+        reference = 20.0
+        # return 20 * np.log10(np.maximum(1e-5, x)) - reference
+        return np.power(10.0, (x + reference) * 0.05)
+
     def _amp_to_db(self, x):
         reference = 20.0
         return 20 * np.log10(np.maximum(1e-5, x)) - reference

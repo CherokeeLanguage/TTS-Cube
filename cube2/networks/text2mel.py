@@ -28,10 +28,12 @@ from os.path import exists
 
 class Text2Mel(nn.Module):
     def __init__(self, encodings, char_emb_size=100, encoder_size=256, encoder_layers=1, decoder_size=1024,
-                 decoder_layers=1, mgc_size=80, pframes=3, teacher_forcing=0.0):
+                 decoder_layers=2, mgc_size=80, pframes=3, teacher_forcing=0.0):
         super(Text2Mel, self).__init__()
         self.MGC_PROJ_SIZE = 100
-        self.ATT_RNN_SIZE = 1000
+        self.STYLE_EMB_SIZE = 100
+        self.NUM_GST = 10
+        # self.ATT_RNN_SIZE = 1000
 
         self.encodings = encodings
         self.teacher_forcing = teacher_forcing
@@ -44,23 +46,24 @@ class Text2Mel(nn.Module):
         self.encoder = nn.LSTM(char_emb_size + 16, encoder_size, encoder_layers, bias=True,
                                dropout=0 if encoder_layers == 1 else 0, bidirectional=True)
 
-        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, decoder_size, decoder_layers,
+        self.decoder = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE + self.STYLE_EMB_SIZE, decoder_size,
+                               decoder_layers,
                                bias=True,
                                dropout=0 if decoder_layers == 1 else 0,
                                bidirectional=False)
 
-        self.attention_rnn = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, self.ATT_RNN_SIZE, decoder_layers,
-                                     bias=True,
-                                     dropout=0 if decoder_layers == 1 else 0,
-                                     bidirectional=False)
+        # self.attention_rnn = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, self.ATT_RNN_SIZE, decoder_layers,
+        #                              bias=True,
+        #                              dropout=0 if decoder_layers == 1 else 0,
+        #                              bidirectional=False)
 
-        self.dec2hid = nn.Sequential(LinearNorm(decoder_size, 500), nn.Tanh())
+        self.dec2hid = nn.Sequential(LinearNorm(decoder_size, 500, w_init_gain='tanh'), nn.Tanh())
         self.dropout = nn.Dropout(0.1)
-        self.output_mgc = nn.Sequential(LinearNorm(500, mgc_size * pframes, w_init_gain='linear'))
-        self.output_stop = nn.Sequential(LinearNorm(self.ATT_RNN_SIZE, self.pframes, w_init_gain='sigmoid'),
+        self.output_mgc = nn.Sequential(LinearNorm(500, mgc_size * pframes, w_init_gain='sigmoid'))
+        self.output_stop = nn.Sequential(LinearNorm(500, self.pframes, w_init_gain='sigmoid'),
                                          nn.Sigmoid())
-        self.att = Attention(encoder_size, self.ATT_RNN_SIZE)
-        self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=encoder_size * 2)
+        self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
+        self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
 
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
@@ -76,6 +79,8 @@ class Text2Mel(nn.Module):
 
             gs_mgc = torch.tensor(tmp, device=self._get_device(), dtype=torch.float)
             gsts, style = self.mel2style(gs_mgc)
+            from ipdb import set_trace
+            set_trace()
         else:  # uniform distribution of style tokens
             batch_size = len(input)
             unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
@@ -84,10 +89,13 @@ class Text2Mel(nn.Module):
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
             if token is None:
-                a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
+                a = [0.0479, 0.0619, 0.1552, 0.1622, 0.1197, 0.0346, 0.2392, 0.0531, 0.1150,
+                     0.0112]
+                # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
-                a = [0, 0, 0, 0, 0, 0, 0, 0]
+                a = [0 for _ in range(self.mel2style.num_gst)]
                 a[token] = 1
+
             a = torch.tensor(a, device=self.dec2hid[0].linear_layer.weight.device.type, dtype=torch.float).unsqueeze(
                 0).unsqueeze(
                 0).repeat(batch_size, 1, 1)
@@ -98,15 +106,16 @@ class Text2Mel(nn.Module):
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
-        # style = style.unsqueeze(1).expand_as(encoder_output)
-        encoder_output = encoder_output  # + style
+        style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
+        encoder_output = torch.cat((encoder_output, style), dim=-1)
 
         _, decoder_hidden = self.decoder(
-            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
-                        device=self._get_device()))
-        attn_output, attn_hidden = self.attention_rnn(
-            torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
-                        device=self._get_device()))
+            torch.zeros(
+                (1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+                device=self._get_device()))
+        # attn_output, attn_hidden = self.attention_rnn(
+        #     torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+        #                 device=self._get_device()))
         last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order), device=self._get_device())
         lst_output = []
         lst_stop = []
@@ -114,21 +123,19 @@ class Text2Mel(nn.Module):
         index = 0
         prev_att_vec = None
         while True:
-            # from ipdb import set_trace
-            # set_trace()
-            att_vec, att = self.att(attn_output, encoder_output)
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
 
             lst_att.append(att_vec.unsqueeze(1))
             m_proj = torch.tanh(self.mgc_proj(last_mgc))
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
-            attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
+            # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
 
             decoder_output = self.dec2hid(decoder_output)
-            out_mgc = self.output_mgc(decoder_output)
-            out_stop = self.output_stop(attn_output.permute(1, 0, 2))
+            out_mgc = torch.sigmoid(self.output_mgc(decoder_output))
+            out_stop = self.output_stop(decoder_output)
             for iFrame in range(self.pframes):
                 lst_output.append(out_mgc[:, :, iFrame * self.mgc_order:iFrame * self.mgc_order + self.mgc_order])
                 lst_stop.append(out_stop[:, :, iFrame])
