@@ -62,8 +62,9 @@ class Text2Mel(nn.Module):
         self.output_mgc = nn.Sequential(LinearNorm(500, mgc_size * pframes, w_init_gain='sigmoid'))
         self.output_stop = nn.Sequential(LinearNorm(500, self.pframes, w_init_gain='sigmoid'),
                                          nn.Sigmoid())
-        self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
+
+        self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
 
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
@@ -79,8 +80,8 @@ class Text2Mel(nn.Module):
 
             gs_mgc = torch.tensor(tmp, device=self._get_device(), dtype=torch.float)
             gsts, style = self.mel2style(gs_mgc)
-            from ipdb import set_trace
-            set_trace()
+            # from ipdb import set_trace
+            # set_trace()
         else:  # uniform distribution of style tokens
             batch_size = len(input)
             unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
@@ -89,8 +90,8 @@ class Text2Mel(nn.Module):
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
             if token is None:
-                a = [0.0479, 0.0619, 0.1552, 0.1622, 0.1197, 0.0346, 0.2392, 0.0531, 0.1150,
-                     0.0112]
+                a = [0.0413, 0.0505, 0.1336, 0.1625, 0.0998, 0.0348, 0.2344, 0.0555, 0.1107,
+                     0.0770]
                 # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
                 a = [0 for _ in range(self.mel2style.num_gst)]
@@ -296,7 +297,7 @@ def _eval(text2mel, dataset, params, loss_func):
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
                 target_att.requires_grad = False
-            loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1))
+            loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1)) / (target_mgc.shape[1] * target_mgc.shape[0])
 
             if not params.disable_guided_attention:
                 loss_comb = loss_comb + (pred_att * target_att).mean()
@@ -404,8 +405,8 @@ def _start_train(params):
     global_step = 0
 
     bce_loss = torch.nn.BCELoss()
-    abs_loss = torch.nn.L1Loss(reduction='mean')
-    mse_loss = torch.nn.MSELoss(reduction='mean')
+    abs_loss = torch.nn.L1Loss(reduction='sum')
+    mse_loss = torch.nn.MSELoss(reduction='sum')
     loss_func = abs_loss
     best_gloss = _eval(text2mel, devset, params, loss_func)
     sys.stdout.write('Devset loss={0}\n'.format(best_gloss))
@@ -433,14 +434,13 @@ def _start_train(params):
 
             lst_gs = []
             lst_post_mgc = []
+            for s_index, sz in zip(range(len(target_size)), target_size):
+                lst_gs.append(target_mgc[s_index, :sz, :].squeeze(0))
+                lst_post_mgc.append(pred_mgc[s_index, :sz, :].squeeze(0))
 
-            for sz in target_size:
-                lst_gs.append(target_mgc[:, :sz, :])
-                lst_post_mgc.append(pred_mgc[:, :sz, :])
-
-            l_tar_mgc = torch.cat(lst_gs, dim=1)
-            l_post_mgc = torch.cat(lst_post_mgc, dim=1)
-            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1))
+            l_tar_mgc = torch.cat(lst_gs, dim=0)
+            l_post_mgc = torch.cat(lst_post_mgc, dim=0)
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             if not params.disable_guided_attention:

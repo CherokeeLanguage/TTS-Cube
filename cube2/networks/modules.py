@@ -50,7 +50,7 @@ class Seq2Seq(nn.Module):
         self.output_emb = nn.Embedding(num_output_tokens, embedding_size, padding_idx=pad_index)
         self.encoder = nn.LSTM(embedding_size, encoder_size, encoder_layers, dropout=0.33, bidirectional=True)
         self.decoder = nn.LSTM(encoder_size * 2 + embedding_size, decoder_size, decoder_layers, dropout=0.33)
-        self.attention = Attention(encoder_size, decoder_size)
+        self.attention = Attention(encoder_size, decoder_size, att_proj_size=decoder_size)
         self.output = nn.Linear(decoder_size, num_output_tokens)
         self._PAD = pad_index
         self._UNK = unk_index
@@ -182,14 +182,14 @@ class Mel2Style(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, enc_hid_dim, dec_hid_dim):
+    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100):
         super(Attention, self).__init__()
 
         self.enc_hid_dim = enc_hid_dim
         self.dec_hid_dim = dec_hid_dim
 
-        self.attn = LinearNorm((enc_hid_dim * 2) + dec_hid_dim, dec_hid_dim, w_init_gain='tanh')
-        self.v = nn.Parameter(torch.rand(dec_hid_dim))
+        self.attn = LinearNorm((enc_hid_dim * 2) + dec_hid_dim, att_proj_size, w_init_gain='tanh')
+        self.v = nn.Parameter(torch.rand(att_proj_size))
 
     def forward(self, hidden, encoder_outputs):
         # encoder_outputs = encoder_outputs.permute(1, 0, 2)

@@ -66,8 +66,6 @@ def synthesize(params):
     text2mel.load('{0}.best'.format(params.text2mel))
     text2mel.to(params.device)
     text2mel.eval()
-    # from ipdb import set_trace
-    # set_trace()
     if params.use_gl:
         cubenet = None
         vocoder = MelVocoder()
