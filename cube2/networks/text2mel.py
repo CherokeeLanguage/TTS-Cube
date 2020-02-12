@@ -52,11 +52,6 @@ class Text2Mel(nn.Module):
                                dropout=0 if decoder_layers == 1 else 0,
                                bidirectional=False)
 
-        # self.attention_rnn = nn.LSTM(encoder_size * 2 + self.MGC_PROJ_SIZE, self.ATT_RNN_SIZE, decoder_layers,
-        #                              bias=True,
-        #                              dropout=0 if decoder_layers == 1 else 0,
-        #                              bidirectional=False)
-
         self.dec2hid = nn.Sequential(LinearNorm(decoder_size, 500, w_init_gain='tanh'), nn.Tanh())
         self.dropout = nn.Dropout(0.1)
         self.output_mgc = nn.Sequential(LinearNorm(500, mgc_size * pframes, w_init_gain='sigmoid'))
@@ -65,7 +60,6 @@ class Text2Mel(nn.Module):
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
 
         self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
-
         if len(encodings.speaker2int) > 1:
             self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
         else:
@@ -108,12 +102,23 @@ class Text2Mel(nn.Module):
             style = torch.bmm(a, unfolded_gst).squeeze(1)
         index = 0
         # input
-        x = self._make_input(input)
+        x, x_speaker = self._make_input(input)
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
         style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
-        encoder_output = torch.cat((encoder_output, style), dim=-1)
+        x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
+
+        style_mask = [1 for _ in range(style.shape[0])]
+        if self.training:
+            for iB in range(style.shape[0]):
+                if random.random() < 0.34:
+                    style_mask[iB] = 0
+        style_mask = torch.tensor(style_mask, device=self._get_device(), dtype=torch.float)
+        style_mask = style_mask.unsqueeze(1).unsqueeze(2)
+        style_mask = style_mask.repeat(1, style.shape[1], 1)
+        style = style * style_mask
+        encoder_output = torch.cat((encoder_output, x_speaker + style), dim=-1)
 
         _, decoder_hidden = self.decoder(
             torch.zeros(
@@ -178,6 +183,12 @@ class Text2Mel(nn.Module):
         return att_vec, att
 
     def _make_input(self, input):
+        speakers = []
+        tmp = []
+        for xx in input:
+            speakers.append(self.encodings.speaker2int[xx[0]])
+            tmp.append(xx[1])
+        input = tmp
         max_len = max([len(seq) for seq in input])
         x_char = np.zeros((len(input), max_len), dtype=np.int32)
         x_case = np.zeros((len(input), max_len), dtype=np.int32)
@@ -204,7 +215,9 @@ class Text2Mel(nn.Module):
         x_case = torch.tensor(x_case, device=self._get_device(), dtype=torch.long)
         x_char = self.char_emb(x_char)
         x_case = self.case_emb(x_case)
-        return torch.cat((x_char, x_case), dim=2)
+        x_speaker = torch.tensor(speakers, device=self._get_device(), dtype=torch.long)
+        x_speaker = self.speaker_emb(x_speaker)
+        return torch.cat((x_char, x_case), dim=2), x_speaker
 
     def _get_device(self):
         if self.case_emb.weight.device.type == 'cpu':
