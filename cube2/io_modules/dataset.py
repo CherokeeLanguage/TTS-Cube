@@ -166,19 +166,27 @@ class DatasetIO:
 
 class Dataset:
     def __init__(self, folder, max_wav_size=-1):
+        import tqdm
+        import os
         from os import listdir
         from os.path import isfile, join
         from os.path import exists
         train_files_tmp = [f for f in listdir(folder) if isfile(join(folder, f))]
 
         final_list = []
-        for file in train_files_tmp:
+        for file in tqdm.tqdm(train_files_tmp):
             base_name = file[:-4]
             if file[-4:] == '.txt' and base_name not in final_list:
                 if max_wav_size != -1:
-                    sr, data = scipy.io.wavfile.read(join(folder, file.replace('.txt', '.orig.wav')))
-                    if data.shape[0] < max_wav_size:
+                    # sr, data = scipy.io.wavfile.read(join(folder, file.replace('.txt', '.orig.wav')))
+                    # if data.shape[0] < max_wav_size:
+                    #    final_list.append(join(folder, base_name))
+                    # from ipdb import set_trace
+                    # set_trace()
+                    w_size = (os.stat(join(folder, file.replace('.txt', '.orig.wav'))).st_size - 44) // 8
+                    if w_size < max_wav_size:
                         final_list.append(join(folder, base_name))
+
                 else:
                     final_list.append(join(folder, base_name))
                 # sys.stdout.write(base_name + '\n')

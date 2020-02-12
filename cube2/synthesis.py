@@ -92,7 +92,7 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file).read().strip()]
         start_text2mel = time.time()
-        mgc, stop, att = text2mel([text], token=params.token)
+        mgc, stop, att = text2mel([[params.speaker, text]], token=params.token)
         stop_text2mel = time.time()
 
     mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),
@@ -217,6 +217,7 @@ if __name__ == '__main__':
     parser.add_option("--pframes", action='store', dest='pframes', default=3,
                       help='Number of frames to predict at once (default=3)')
     parser.add_option("--use-gl", action="store_true", dest="use_gl", help='Use GL reconstruction')
+    parser.add_option("--speaker", action="store", dest="speaker", default='poly')
 
     (params, _) = parser.parse_args(sys.argv)
 
