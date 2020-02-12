@@ -66,6 +66,11 @@ class Text2Mel(nn.Module):
 
         self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
 
+        if len(encodings.speaker2int) > 1:
+            self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
+        else:
+            self.speaker_emb = None
+
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
@@ -90,8 +95,8 @@ class Text2Mel(nn.Module):
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
             if token is None:
-                a = [0.0413, 0.0505, 0.1336, 0.1625, 0.0998, 0.0348, 0.2344, 0.0555, 0.1107,
-                     0.0770]
+                a = [0.0416, 0.0556, 0.1328, 0.1580, 0.1039, 0.0367, 0.2208, 0.0513, 0.1096,
+                     0.0897]
                 # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
                 a = [0 for _ in range(self.mel2style.num_gst)]
@@ -238,11 +243,13 @@ class DataLoader:
         if exists(lab_file):
             json_obj = json.load(open(lab_file))
             trans = json_obj['transcription']
+            speaker = json_obj['speaker']
         else:
             txt = open(txt_file).read().strip()
             trans = [c for c in txt]
+            speaker = 'none'
         self._file_index += 1
-        return trans, mgc  # , np.abs(fft)
+        return [speaker, trans], mgc  # , np.abs(fft)
 
     def get_batch(self, batch_size, mini_batch_size=16, device='cuda:0'):
         batch_mgc = []
@@ -297,7 +304,16 @@ def _eval(text2mel, dataset, params, loss_func):
             if not params.disable_guided_attention:
                 target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
                 target_att.requires_grad = False
-            loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1)) / (target_mgc.shape[1] * target_mgc.shape[0])
+            # loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1)) / (target_mgc.shape[1] * target_mgc.shape[0])
+            lst_gs = []
+            lst_post_mgc = []
+            for s_index, sz in zip(range(len(target_size)), target_size):
+                lst_gs.append(target_mgc[s_index, :sz, :].squeeze(0))
+                lst_post_mgc.append(pred_mgc[s_index, :sz, :].squeeze(0))
+
+            l_tar_mgc = torch.cat(lst_gs, dim=0)
+            l_post_mgc = torch.cat(lst_post_mgc, dim=0)
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             if not params.disable_guided_attention:
                 loss_comb = loss_comb + (pred_att * target_att).mean()
@@ -316,12 +332,14 @@ def _update_encodings(encodings, dataset):
         if exists(lab_file):
             json_obj = json.load(open(lab_file))
             trans = json_obj['transcription']
+            speaker = json_obj['speaker']
         else:
             txt = open(txt_file).read().strip()
             trans = [c for c in trans]
+            speaker = 'none'
         for char in trans:
             from cube2.io_modules.dataset import PhoneInfo
-            pi = PhoneInfo(char, [], -1, -1)
+            pi = PhoneInfo(char, ['SPEAKER:' + speaker], -1, -1)
             encodings.update(pi)
 
 
@@ -407,7 +425,7 @@ def _start_train(params):
     bce_loss = torch.nn.BCELoss()
     abs_loss = torch.nn.L1Loss(reduction='sum')
     mse_loss = torch.nn.MSELoss(reduction='sum')
-    loss_func = abs_loss
+    loss_func = mse_loss
     best_gloss = _eval(text2mel, devset, params, loss_func)
     sys.stdout.write('Devset loss={0}\n'.format(best_gloss))
     while patience_left > 0:
