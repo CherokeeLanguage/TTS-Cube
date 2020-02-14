@@ -64,6 +64,7 @@ class Text2Mel(nn.Module):
             self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
         else:
             self.speaker_emb = None
+        self.postnet = PostNet(num_mels=mgc_size)
 
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
@@ -89,16 +90,16 @@ class Text2Mel(nn.Module):
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
             if token is None:
-                a = [0.0416, 0.0556, 0.1328, 0.1580, 0.1039, 0.0367, 0.2208, 0.0513, 0.1096,
-                     0.0897]
+                a = [0.0286, 0.0588, 0.1416, 0.1549, 0.0916, 0.0616, 0.1527, 0.0614, 0.1280,
+                     0.1208]
+                # a = [0 for _ in range(self.mel2style.num_gst)]
                 # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
-                a = [0 for _ in range(self.mel2style.num_gst)]
-                a[token] = 1
+                a = [(0.4 / (self.mel2style.num_gst - 1)) for _ in range(self.mel2style.num_gst)]
+                a[token] = 0.6
 
-            a = torch.tensor(a, device=self.dec2hid[0].linear_layer.weight.device.type, dtype=torch.float).unsqueeze(
-                0).unsqueeze(
-                0).repeat(batch_size, 1, 1)
+            a = torch.tensor(a, device=self.dec2hid[0].linear_layer.weight.device.type,
+                             dtype=torch.float).unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
             style = torch.bmm(a, unfolded_gst).squeeze(1)
         index = 0
         # input
@@ -174,7 +175,10 @@ class Text2Mel(nn.Module):
         mgc = torch.cat(lst_output, dim=1)  # .view(len(input), -1, self.mgc_order)
         stop = torch.cat(lst_stop, dim=1)  # .view(len(input), -1)
         att = torch.cat(lst_att, dim=1)
-        return mgc, stop, att
+        if self.training:
+            return mgc, mgc + self.postnet(mgc), stop, att
+        else:
+            return mgc + self.postnet(mgc), stop, att
 
     def _correct_attention(self, att, att_vec, prev_att_vec, encoder_outputs):
         # TODO: add method for correcting skipped and reversed encoder_outputs
@@ -450,7 +454,7 @@ def _start_train(params):
             sys.stderr.flush()
             global_step += 1
             x, mgc = trainset.get_batch(batch_size=params.batch_size)
-            pred_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            pred_mgc, post_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
             target_mgc, target_stop, target_size = _make_batch(mgc,
                                                                params.pframes,
                                                                device=params.device)
@@ -464,14 +468,18 @@ def _start_train(params):
                 target_att.requires_grad = False
 
             lst_gs = []
+            lst_pre_mgc = []
             lst_post_mgc = []
             for s_index, sz in zip(range(len(target_size)), target_size):
                 lst_gs.append(target_mgc[s_index, :sz, :].squeeze(0))
-                lst_post_mgc.append(pred_mgc[s_index, :sz, :].squeeze(0))
+                lst_pre_mgc.append(pred_mgc[s_index, :sz, :].squeeze(0))
+                lst_post_mgc.append(post_mgc[s_index, :sz, :].squeeze(0))
 
             l_tar_mgc = torch.cat(lst_gs, dim=0)
+            l_pre_mgc = torch.cat(lst_pre_mgc, dim=0)
             l_post_mgc = torch.cat(lst_post_mgc, dim=0)
-            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0]) + \
+                        loss_func(l_pre_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             if not params.disable_guided_attention:
