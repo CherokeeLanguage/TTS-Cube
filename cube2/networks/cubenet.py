@@ -176,7 +176,11 @@ def _start_train(params):
             global_step += 1
             x, mgc = trainset.get_batch(batch_size=params.batch_size)
             mean, logvar, pred_y, mean_nc, logvar_nc = cubenet(mgc, x=x)
-            loss_gauss = gaussian_loss(mean, logvar, x) + gaussian_loss(mean_nc, logvar_nc, x) * params.aux_loss_weight
+            if params.model == 'single':
+                loss_gauss = gaussian_loss(mean, logvar, x)
+            else:
+                loss_gauss = gaussian_loss(mean, logvar, x) + gaussian_loss(mean_nc, logvar_nc,
+                                                                            x) * params.aux_loss_weight
 
             loss = loss_gauss
             optimizer_gen.zero_grad()
