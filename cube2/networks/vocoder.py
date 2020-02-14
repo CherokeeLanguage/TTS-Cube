@@ -174,6 +174,9 @@ class CubeNet2(nn.Module):
                 output_nc = self.output_nc(rnn_output)
                 mean_nc = output_nc[:, :, :self.output_samples]
                 logvar_nc = output_nc[:, :, self.output_samples:]
+            else:
+                mean_nc = None
+                logvar_nc = None
 
             mean = torch.cat(m_list, dim=2)  # .reshape(mean.shape[0], -1, self.output_samples)
             logvar = torch.cat(l_list, dim=2)  # .reshape(logvar.shape[0], -1, self.output_samples)
@@ -226,7 +229,10 @@ class CubeNet2(nn.Module):
         if not self.training:
             return mean, logvar, zz, None, None
         else:
-            return mean, logvar, zz, mean_nc, logvar_nc
+            if mean_nc is not None:
+                return mean, logvar, zz, mean_nc, logvar_nc
+            else:
+                return mean, logvar, zz, mean, logvar
 
     def save(self, path):
         torch.save(self.state_dict(), path)
