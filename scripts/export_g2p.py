@@ -72,7 +72,6 @@ g2p.eval()
 s2s = Seq2SeqSimplified(g2p.seq2seq)
 
 script_model = torch.jit.script(s2s, torch.tensor([[1,2,3,4],[5,6,7,8]]))
-from ipdb import set_trace
-set_trace()
+
 script_model.save("data/models/en-g2p.pth")
 
