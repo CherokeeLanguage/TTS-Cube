@@ -54,10 +54,10 @@ class Text2MelSimplified(nn.Module):
 
         style_mask = [1 for _ in range(style.shape[0])]
 
-        style_mask = torch.tensor(style_mask, dtype=torch.float)
-        style_mask = style_mask.unsqueeze(1).unsqueeze(2)
-        style_mask = style_mask.repeat(1, style.shape[1], 1)
-        style = style * style_mask
+        # style_mask = torch.tensor(style_mask, dtype=torch.float)
+        # style_mask = style_mask.unsqueeze(1).unsqueeze(2)
+        # style_mask = style_mask.repeat(1, style.shape[1], 1)
+        # style = style * style_mask
         encoder_output = torch.cat((encoder_output, x_speaker + style), dim=-1)
 
         _, decoder_hidden = self.decoder(torch.zeros((1,
@@ -72,9 +72,13 @@ class Text2MelSimplified(nn.Module):
         prev_att_vec = None
         stationary = 0
         last_index = 0
+        delta = 3
         while True:
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
-            last_index = torch.argmax(att_vec).squeeze()
+            start_index = last_index
+            stop_index = min(last_index + delta, encoder_output.shape[1])
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start_index:stop_index, :])
+            last_index = last_index + torch.argmax(att_vec).squeeze()
+            att = encoder_output[:, last_index, :]
             if last_index >= encoder_output.shape[1] - 2:
                 stationary += 1
             if stationary == 3:
