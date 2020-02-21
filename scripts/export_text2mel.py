@@ -42,22 +42,15 @@ class Text2MelSimplified(nn.Module):
         a = style_probs.unsqueeze(1)
         style = torch.bmm(a, unfolded_gst).squeeze(1)
         # x, x_speaker = self._make_input(input)
-        x = x
-        x_case = x_case
-        x = torch.cat((self.char_emb(x), self.case_emb(x_case)), dim=-1)
+
+        lstm_input = torch.cat((self.char_emb(x), self.case_emb(x_case)), dim=-1)
         x_speaker = self.speaker_emb(spearker_id)
-        lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
+
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
         style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
         x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
 
-        style_mask = [1 for _ in range(style.shape[0])]
-
-        # style_mask = torch.tensor(style_mask, dtype=torch.float)
-        # style_mask = style_mask.unsqueeze(1).unsqueeze(2)
-        # style_mask = style_mask.repeat(1, style.shape[1], 1)
-        # style = style * style_mask
         encoder_output = torch.cat((encoder_output, x_speaker + style), dim=-1)
 
         _, decoder_hidden = self.decoder(torch.zeros((1,
@@ -72,12 +65,20 @@ class Text2MelSimplified(nn.Module):
         prev_att_vec = None
         stationary = 0
         last_index = 0
-        delta = 3
+        wait_count = 0
+        delta = 5
         while True:
-            start_index = last_index
-            stop_index = min(last_index + delta, encoder_output.shape[1])
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start_index:stop_index, :])
-            last_index = last_index + torch.argmax(att_vec).squeeze()
+            start = last_index
+            stop = last_index + delta
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start:stop, :])
+            dlta = torch.argmax(att_vec.detach()).squeeze()
+            last_index = last_index + dlta
+            if dlta == 0:
+                wait_count += 1
+                if wait_count == 6:
+                    last_index += 1
+            else:
+                wait_count = 0
             att = encoder_output[:, last_index, :]
             if last_index >= encoder_output.shape[1] - 2:
                 stationary += 1
@@ -120,8 +121,8 @@ text2mel.eval()
 
 st2m = Text2MelSimplified(text2mel)
 
-script_model = torch.jit.script(st2m, (torch.tensor([0, 1, 2, 3]),
-                                       torch.tensor([0]),
-                                       torch.tensor([0 for _ in range(10)])))
+script_model = torch.jit.script(st2m)  # , (torch.tensor([0, 1, 2, 3]),
+#  torch.tensor([0]),
+#  torch.tensor([0 for _ in range(10)])))
 
 script_model.save("data/text2mel.pth")
