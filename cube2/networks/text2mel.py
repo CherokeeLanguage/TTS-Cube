@@ -66,6 +66,83 @@ class Text2Mel(nn.Module):
             self.speaker_emb = None
         self.postnet = PostNet(num_mels=mgc_size)
 
+    def raw_forward(self, x, speaker_id, gst):
+
+        a = torch.tensor(gst, device=self.dec2hid[0].linear_layer.weight.device.type,
+                         dtype=torch.float).unsqueeze(0).unsqueeze(0)
+
+        unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(x.shape[0])],
+                                    device=self.dec2hid[0].linear_layer.weight.device.type, dtype=torch.long)
+        unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
+
+        style = torch.bmm(a, unfolded_gst).squeeze(1)
+        x_speaker=self.speaker_emb(speaker_id)
+
+        lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
+        encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
+        encoder_output = encoder_output.permute(1, 0, 2)
+        style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
+        x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
+
+        style_mask = [1 for _ in range(style.shape[0])]
+        if self.training:
+            for iB in range(style.shape[0]):
+                if random.random() < 0.34:
+                    style_mask[iB] = 0
+        style_mask = torch.tensor(style_mask, device=self._get_device(), dtype=torch.float)
+        style_mask = style_mask.unsqueeze(1).unsqueeze(2)
+        style_mask = style_mask.repeat(1, style.shape[1], 1)
+        style = style * style_mask
+        encoder_output = torch.cat((encoder_output, x_speaker + style), dim=-1)
+
+        _, decoder_hidden = self.decoder(
+            torch.zeros(
+                (1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+                device=self._get_device()))
+        # attn_output, attn_hidden = self.attention_rnn(
+        #     torch.zeros((1, encoder_output.shape[0], encoder_output.shape[2] + self.MGC_PROJ_SIZE),
+        #                 device=self._get_device()))
+        last_mgc = torch.zeros((lstm_input.shape[0], self.mgc_order), device=self._get_device())
+        lst_output = []
+        lst_stop = []
+        lst_att = []
+        index = 0
+        prev_att_vec = None
+        while True:
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+
+            lst_att.append(att_vec.unsqueeze(1))
+            m_proj = torch.tanh(self.mgc_proj(last_mgc))
+
+            decoder_input = torch.cat((att, m_proj), dim=1)
+            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
+            # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
+            decoder_output = decoder_output.permute(1, 0, 2)
+
+            decoder_output = self.dec2hid(decoder_output)
+            out_mgc = torch.sigmoid(self.output_mgc(decoder_output))
+            out_stop = self.output_stop(decoder_output)
+            for iFrame in range(self.pframes):
+                lst_output.append(out_mgc[:, :, iFrame * self.mgc_order:iFrame * self.mgc_order + self.mgc_order])
+                lst_stop.append(out_stop[:, :, iFrame])
+                last_mgc = out_mgc.detach().squeeze(1)[:, -self.mgc_order:]
+            else:
+                last_mgc = out_mgc.squeeze(1)[:, -self.mgc_order:]
+            index += self.pframes
+            if any(out_stop[0][-1].detach().cpu().numpy() > 0.5):
+                break
+            # failsafe
+            if index > x.shape[1] * 25:
+                break
+        mgc = torch.cat(lst_output, dim=1)  # .view(len(input), -1, self.mgc_order)
+        stop = torch.cat(lst_stop, dim=1)  # .view(len(input), -1)
+        att = torch.cat(lst_att, dim=1)
+        if self.training:
+            return mgc, mgc + self.postnet(mgc), stop, att
+        else:
+            return mgc + self.postnet(mgc), stop, att
+
+
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
