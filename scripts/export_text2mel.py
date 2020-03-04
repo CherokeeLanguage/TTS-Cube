@@ -74,7 +74,7 @@ class Text2MelSimplified(nn.Module):
                     att = encoder_output[:, last_index + 1, :]
             else:
                 wait_count = 0
-                
+
             last_index = new_index
 
             if last_index >= encoder_output.shape[1] - 2:
