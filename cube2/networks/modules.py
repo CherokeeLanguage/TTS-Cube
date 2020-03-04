@@ -17,6 +17,7 @@
 import torch
 import torch.nn as nn
 import torch.functional as F
+import numpy as np
 
 
 class UpsampleNet(nn.Module):
@@ -40,7 +41,6 @@ class UpsampleNet(nn.Module):
         o_list = o_list.view(o_list.shape[0], -1, self.output_size)
         return o_list
 
-
 class Seq2Seq(nn.Module):
     def __init__(self, num_input_tokens, num_output_tokens, embedding_size=100, encoder_size=100, encoder_layers=2,
                  decoder_size=200, decoder_layers=2, pad_index=0, unk_index=1, stop_index=2):
@@ -56,6 +56,38 @@ class Seq2Seq(nn.Module):
         self._UNK = unk_index
         self._EOS = stop_index
         self._dec_input_size = encoder_size * 2 + embedding_size
+
+    def inference(self,x):
+        x = self.input_emb(x)
+        encoder_output, encoder_hidden = self.encoder(x.permute(1, 0, 2))
+        encoder_output = encoder_output.permute(1, 0, 2)
+        count = 0
+
+        _, decoder_hidden = self.decoder(torch.zeros((1, x.shape[0], self._dec_input_size)))
+        last_output_emb = torch.zeros((x.shape[0], self.emb_size))
+        output_list = []
+        index = 0
+        reached_end = [False for ii in range(x.shape[0])]
+        while True:
+            _, encoder_att = self.attention(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+            decoder_input = torch.cat([encoder_att, last_output_emb], dim=1)
+            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), decoder_hidden)
+            output = self.output(decoder_output.squeeze(0))
+            output_list.append(output.unsqueeze(1))
+
+            outp = torch.argmax(output, dim=1)
+            last_output_emb = self.output_emb(outp)
+            for ii in range(outp.shape[0]):
+                if outp[ii] == self._EOS:
+                    reached_end[ii] = True
+            if np.all(reached_end):
+                break
+            index += 1
+
+            if index > x.shape[1] * 10:
+                break
+
+        return torch.cat(output_list, dim=1)
 
     def forward(self, x, gs_output=None):
         # x, y = self._make_batches(input, gs_output)
@@ -89,7 +121,7 @@ class Seq2Seq(nn.Module):
                 for ii in range(outp.shape[0]):
                     if outp[ii] == self._EOS:
                         reached_end[ii] = True
-                import numpy as np
+
                 if np.all(reached_end):
                     break
                 index += 1
@@ -99,14 +131,17 @@ class Seq2Seq(nn.Module):
 
         return torch.cat(output_list, dim=1)
 
+    @torch.jit.ignore
     def _get_device(self):
         if self.input_emb.weight.device.type == 'cpu':
             return 'cpu'
         return '{0}:{1}'.format(self.input_emb.weight.device.type, str(self.input_emb.weight.device.index))
 
+    @torch.jit.ignore
     def save(self, path):
         torch.save(self.state_dict(), path)
 
+    @torch.jit.ignore
     def load(self, path):
         # from ipdb import set_trace
         # set_trace()
