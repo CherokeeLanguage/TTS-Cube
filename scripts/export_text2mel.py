@@ -63,11 +63,25 @@ class Text2MelSimplified(nn.Module):
         lst_att = []
         index = 0
         stationary = 0
-        last_index = 5
+        last_index = 0
+        delta_att = 7
         wait_count = 0
         while True:
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
-            new_index = torch.argmax(att_vec).detach().squeeze().cpu()
+            start = last_index - delta_att
+            stop = last_index + delta_att
+            if start < 0:
+                stop += -start
+                start = 0
+            if stop > encoder_output.shape[1] - 1:
+                start -= stop - encoder_output.shape[1] - 1
+                stop = encoder_output.shape[1] - 1
+
+            if start < 0 or stop > encoder_output.shape[1] - 1:
+                start = 0
+                stop = encoder_output.shape[1]
+
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start:stop, :])
+            new_index = torch.argmax(att_vec).detach().squeeze().cpu() + start
             if new_index == last_index:
                 wait_count += 1
                 if wait_count == 10:
