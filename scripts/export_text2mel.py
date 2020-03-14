@@ -96,7 +96,7 @@ class Text2MelSimplified(nn.Module):
             if stationary == 4:
                 break
             lst_att.append(att_vec.unsqueeze(1))
-            m_proj = torch.tanh(self.mgc_proj(last_mgc))
+            m_proj = torch.dropout(torch.tanh(self.mgc_proj(last_mgc)), 0.5, True)
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
