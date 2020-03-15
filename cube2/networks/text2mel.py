@@ -66,7 +66,11 @@ class Text2Mel(nn.Module):
             self.speaker_emb = None
         self.postnet = PostNet(num_mels=mgc_size)
 
-    def raw_forward(self, x, speaker_id, gst):
+    def raw_forward(self, x, speaker, gst):
+        speaker_id = self.encodings.speaker2int[speaker]
+        if gst is None:
+            gst = [0.0286, 0.0588, 0.1416, 0.1549, 0.0916, 0.0616, 0.1527, 0.0614, 0.1280,
+                   0.1208]
 
         a = torch.tensor(gst, device=self.dec2hid[0].linear_layer.weight.device.type,
                          dtype=torch.float).unsqueeze(0).unsqueeze(0)
@@ -76,7 +80,7 @@ class Text2Mel(nn.Module):
         unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
 
         style = torch.bmm(a, unfolded_gst).squeeze(1)
-        x_speaker=self.speaker_emb(speaker_id)
+        x_speaker = self.speaker_emb(speaker_id)
 
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
@@ -108,11 +112,25 @@ class Text2Mel(nn.Module):
         lst_att = []
         index = 0
         prev_att_vec = None
+        last_att = 0
+        delta_att = 7
         while True:
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+            start = last_att - delta_att
+            stop = last_att + delta_att
+            if start < 0:
+                stop += -start
+                start = 0
+            if stop >= encoder_output.shape[1]:
+                start -= stop - encoder_output.shape[1] + 1
+                stop = encoder_output.shape[1] - 1
+
+            if start < 0 or stop >= encoder_output.shape[1]:
+                start = 0
+                stop = encoder_output.shape[1] - 1
+            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start:stop, :])
 
             lst_att.append(att_vec.unsqueeze(1))
-            m_proj = torch.tanh(self.mgc_proj(last_mgc))
+            m_proj = torch.dropout(torch.tanh(self.mgc_proj(last_mgc)), 0.5, True)
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
@@ -142,8 +160,7 @@ class Text2Mel(nn.Module):
         else:
             return mgc + self.postnet(mgc), stop, att
 
-
-    def forward(self, input, gs_mgc=None, token=None):
+    def forward(self, input, gs_mgc=None, token=None, x_lengths=None, y_lengths=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
             # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
@@ -167,9 +184,9 @@ class Text2Mel(nn.Module):
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
             if token is None:
-                a = [0.0286, 0.0588, 0.1416, 0.1549, 0.0916, 0.0616, 0.1527, 0.0614, 0.1280,
-                     0.1208]
-                # a = [0 for _ in range(self.mel2style.num_gst)]
+                # a = [0.0286, 0.0588, 0.1416, 0.1549, 0.0916, 0.0616, 0.1527, 0.0614, 0.1280,
+                #      0.1208]
+                a = [0 for _ in range(self.mel2style.num_gst)]
                 # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
                 a = [(0.4 / (self.mel2style.num_gst - 1)) for _ in range(self.mel2style.num_gst)]
@@ -211,11 +228,51 @@ class Text2Mel(nn.Module):
         lst_att = []
         index = 0
         prev_att_vec = None
+        delta_att = 7
+        last_att = 0
         while True:
-            att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+            if x_lengths is not None:
+
+                medians = self._compute_medians(x_lengths, y_lengths, index)
+                enc_out_list = []
+                for iBatch in range(medians.shape[0]):
+                    median = medians[iBatch]
+                    start = median - delta_att
+                    stop = median + delta_att
+                    if start < 0:
+                        stop += -start
+                        start = 0
+                    if stop >= encoder_output.shape[1]:
+                        start -= stop - encoder_output.shape[1] + 1
+                        stop = encoder_output.shape[1] - 1
+
+                    if start < 0 or stop >= encoder_output.shape[1]:
+                        start = 0
+                        stop = encoder_output.shape[1] - 1
+                    enc_out_list.append(encoder_output[iBatch, int(start):int(stop + 1), :].unsqueeze(0))
+                enc_out = torch.cat(enc_out_list, dim=0)
+                att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), enc_out)
+            else:
+                if self.training:
+                    att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
+                else:
+                    start = last_att - delta_att
+                    stop = last_att + delta_att
+                    if start < 0:
+                        stop += -start
+                        start = 0
+                    if stop >= encoder_output.shape[1]:
+                        start -= stop - encoder_output.shape[1] + 1
+                        stop = encoder_output.shape[1] - 1
+
+                    if start < 0 or stop >= encoder_output.shape[1]:
+                        start = 0
+                        stop = encoder_output.shape[1] - 1
+                    att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start:stop, :])
+                    last_att = start + torch.argmax(att_vec)
 
             lst_att.append(att_vec.unsqueeze(1))
-            m_proj = torch.tanh(self.mgc_proj(last_mgc))
+            m_proj = torch.dropout(torch.tanh(self.mgc_proj(last_mgc)), 0.5, True)
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
@@ -256,6 +313,12 @@ class Text2Mel(nn.Module):
             return mgc, mgc + self.postnet(mgc), stop, att
         else:
             return mgc + self.postnet(mgc), stop, att
+
+    def _compute_medians(self, x_lengths, y_lengths, index):
+        medians = np.zeros((len(x_lengths)))
+        for i in range(len(x_lengths)):
+            medians[i] = int(x_lengths[i] * (index / y_lengths[i]))
+        return medians
 
     def _correct_attention(self, att, att_vec, prev_att_vec, encoder_outputs):
         # TODO: add method for correcting skipped and reversed encoder_outputs
@@ -383,21 +446,24 @@ def _eval(text2mel, dataset, params, loss_func):
             sys.stdout.flush()
             sys.stderr.flush()
             x, mgc = dataset.get_batch(batch_size=min(params.batch_size, len(dataset._dataset.files) - prg))
-            pred_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            if not params.disable_guided_attention:
+                x_lengths = [len(seq[1]) for seq in x]
+                y_lengths = [m.shape[0] for m in mgc]
+            else:
+                x_lengths = None
+                y_lengths = None
+            pred_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc, x_lengths=x_lengths, y_lengths=y_lengths)
             target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes,
                                                                device=params.device)
 
             target_mgc.requires_grad = False
             target_stop.requires_grad = False
 
-            # from ipdb import set_trace
-            # set_trace()
-
             num_tokens = [len(seq) for seq in x]
             num_mgcs = [m.shape[0] // params.pframes for m in mgc]
-            if not params.disable_guided_attention:
-                target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
-                target_att.requires_grad = False
+            # if not params.disable_guided_attention:
+            #     target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
+            #     target_att.requires_grad = False
             # loss_comb = loss_func(pred_mgc.view(-1), target_mgc.view(-1)) / (target_mgc.shape[1] * target_mgc.shape[0])
             lst_gs = []
             lst_post_mgc = []
@@ -409,8 +475,8 @@ def _eval(text2mel, dataset, params, loss_func):
             l_post_mgc = torch.cat(lst_post_mgc, dim=0)
             loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
-            if not params.disable_guided_attention:
-                loss_comb = loss_comb + (pred_att * target_att).mean()
+            # if not params.disable_guided_attention:
+            #     loss_comb = loss_comb + (pred_att * target_att).mean()
             lss_comb = loss_comb.item()
             total_loss += lss_comb
 
@@ -488,7 +554,7 @@ def _start_train(params):
     from cube2.io_modules.dataset import Dataset, Encodings
     import tqdm
 
-    trainset = Dataset("data/processed/train", max_wav_size=16000 * 12)
+    trainset = Dataset("data/processed/train")  # , max_wav_size=16000 * 12)
     import random
     random.shuffle(trainset.files)
     devset = Dataset("data/processed/dev")
@@ -531,7 +597,14 @@ def _start_train(params):
             sys.stderr.flush()
             global_step += 1
             x, mgc = trainset.get_batch(batch_size=params.batch_size)
-            pred_mgc, post_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
+            if not params.disable_guided_attention:
+                x_lengths = [len(seq[1]) for seq in x]
+                y_lengths = [m.shape[0] for m in mgc]
+            else:
+                x_lengths = None
+                y_lengths = None
+
+            pred_mgc, post_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc, x_lengths=x_lengths, y_lengths=y_lengths)
             target_mgc, target_stop, target_size = _make_batch(mgc,
                                                                params.pframes,
                                                                device=params.device)
@@ -540,9 +613,9 @@ def _start_train(params):
 
             num_tokens = [len(seq) for seq in x]
             num_mgcs = [m.shape[0] // params.pframes for m in mgc]
-            if not params.disable_guided_attention:
-                target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
-                target_att.requires_grad = False
+            # if not params.disable_guided_attention:
+            #     target_att = _compute_guided_attention(num_tokens, num_mgcs, device=params.device)
+            #     target_att.requires_grad = False
 
             lst_gs = []
             lst_pre_mgc = []
@@ -559,8 +632,8 @@ def _start_train(params):
                         loss_func(l_pre_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
-            if not params.disable_guided_attention:
-                loss_comb = loss_comb + (pred_att * target_att).mean()
+            # if not params.disable_guided_attention:
+            #     loss_comb = loss_comb + (pred_att * target_att).mean()
             loss = loss_comb
             optimizer_gen.zero_grad()
             loss.backward()
