@@ -41,6 +41,7 @@ class UpsampleNet(nn.Module):
         o_list = o_list.view(o_list.shape[0], -1, self.output_size)
         return o_list
 
+
 class Seq2Seq(nn.Module):
     def __init__(self, num_input_tokens, num_output_tokens, embedding_size=100, encoder_size=100, encoder_layers=2,
                  decoder_size=200, decoder_layers=2, pad_index=0, unk_index=1, stop_index=2):
@@ -57,7 +58,7 @@ class Seq2Seq(nn.Module):
         self._EOS = stop_index
         self._dec_input_size = encoder_size * 2 + embedding_size
 
-    def inference(self,x):
+    def inference(self, x):
         x = self.input_emb(x)
         encoder_output, encoder_hidden = self.encoder(x.permute(1, 0, 2))
         encoder_output = encoder_output.permute(1, 0, 2)
@@ -205,7 +206,7 @@ class Mel2Style(nn.Module):
         src_len = self.num_gst
         hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
         unfolded_gst = torch.tensor([[i for i in range(self.num_gst)] for _ in range(batch_size)],
-                                    device=hidden.device.type, dtype=torch.long)
+                                    device=self._get_device(), dtype=torch.long)
         encoder_outputs = torch.tanh(self.gst(unfolded_gst))
         energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
         energy = energy.permute(0, 2, 1)
@@ -214,6 +215,11 @@ class Mel2Style(nn.Module):
         a = attention.unsqueeze(1)
         weighted = torch.bmm(a, encoder_outputs).squeeze(1)
         return attention, weighted
+
+    def _get_device(self):
+        if self.gst.weight.device.type == 'cpu':
+            return 'cpu'
+        return '{0}:{1}'.format(self.gst.weight.device.type, str(self.gst.weight.device.index))
 
 
 class Attention(nn.Module):

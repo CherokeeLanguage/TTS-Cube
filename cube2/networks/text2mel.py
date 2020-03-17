@@ -179,7 +179,7 @@ class Text2Mel(nn.Module):
         else:  # uniform distribution of style tokens
             batch_size = len(input)
             unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
-                                        device=self.dec2hid[0].linear_layer.weight.device.type, dtype=torch.long)
+                                        device=self._get_device(), dtype=torch.long)
             unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
             # a = [(1.0 - 0.8) / (self.mel2style.num_gst - 1) for _ in range(self.mel2style.num_gst)]
             # a[2] = 0.8
