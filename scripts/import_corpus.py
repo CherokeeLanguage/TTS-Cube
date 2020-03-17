@@ -74,7 +74,7 @@ if __name__ == '__main__':
 
 
     def create_lab_file(txt_file, lab_file, speaker_name=None, g2p=None):
-        fin = open(txt_file, 'r')
+        fin = open(txt_file, 'r', encoding='utf-8')
         line = fin.readline().strip().replace('\t', ' ')
         json_obj = {}
         while True:
@@ -104,7 +104,7 @@ if __name__ == '__main__':
             json_obj['transcription'] = ['<START>'] + [c.lower() for c in line] + ['<STOP>']
 
         fin.close()
-        fout = open(lab_file, 'w')
+        fout = open(lab_file, 'w', encoding='utf-8')
         import json
         json.dump(json_obj, fout)
         fout.close()
