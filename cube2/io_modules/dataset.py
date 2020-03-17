@@ -25,7 +25,7 @@ class Encodings:
                     self.speaker2int[feature[8:]] = len(self.speaker2int)
 
     def store(self, filename):
-        f = open(filename, 'w')
+        f = open(filename, 'w', encoding='utf-8')
         f.write('SYMBOLS\t' + str(len(self.char2int)) + '\n')
         for char in self.char2int:
             f.write(char + '\t' + str(self.char2int[char]) + '\n')
