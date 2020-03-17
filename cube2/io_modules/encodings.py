@@ -42,7 +42,7 @@ class Encodings:
                 self.char2int[char] = len(self.char2int)
 
     def save(self, filename):
-        f = open(filename, "w")
+        f = open(filename, "w", encoding="utf-8")
         f.write('CHARS ' + str(len(self.char2int)) + '\n')
         for char in self.char2int:
             f.write(char + '\t' + str(self.char2int[char]) + '\n')
@@ -54,7 +54,7 @@ class Encodings:
         f.close()
 
     def load(self, filename):
-        f = open(filename)
+        f = open(filename, encoding="utf-8")
         line = f.readline()
         parts = line.split(' ')
         num_chars = int(parts[1])
