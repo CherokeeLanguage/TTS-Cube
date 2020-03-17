@@ -21,8 +21,8 @@ class Encodings:
                 if feature not in self.context2int:
                     self.context2int[feature] = len(self.context2int)
             else:
-                if feature not in self.speaker2int:
-                    self.speaker2int[feature] = len(self.speaker2int)
+                if feature[8:] not in self.speaker2int:
+                    self.speaker2int[feature[8:]] = len(self.speaker2int)
 
     def store(self, filename):
         f = open(filename, 'w')
