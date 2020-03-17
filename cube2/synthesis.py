@@ -82,7 +82,7 @@ def synthesize(params):
 
     with torch.no_grad():
         if params.g2p:
-            text = open(params.txt_file).read().strip()
+            text = open(params.txt_file, encoding='utf-8').read().strip()
             tokens = g2p.transcribe_utterance(text)
             trans = []
             for token in tokens:
@@ -90,7 +90,7 @@ def synthesize(params):
                     trans.append(ph)
             text = ['<START>'] + trans + ['<STOP>']
         else:
-            text = [c for c in open(params.txt_file).read().strip()]
+            text = [c for c in open(params.txt_file, encoding='utf-8').read().strip()]
         start_text2mel = time.time()
         mgc, stop, att = text2mel([[params.speaker, text]])  # , token=params.token)
         stop_text2mel = time.time()
@@ -167,7 +167,7 @@ def quick_test(params):
         cubenet = None
     with torch.no_grad():
         start_text2mel = time.time()
-        mgc, _, stop, att = text2mel([open(params.txt_file).read().strip()])
+        mgc, _, stop, att = text2mel([open(params.txt_file, encoding='utf-8').read().strip()])
         stop_text2mel = time.time()
 
     import PIL.Image
