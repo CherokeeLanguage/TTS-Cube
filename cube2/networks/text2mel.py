@@ -76,7 +76,7 @@ class Text2Mel(nn.Module):
         unfolded_gst = torch.tanh(self.mel2style.gst(unfolded_gst))
 
         style = torch.bmm(a, unfolded_gst).squeeze(1)
-        x_speaker=self.speaker_emb(speaker_id)
+        x_speaker = self.speaker_emb(speaker_id)
 
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
@@ -142,7 +142,6 @@ class Text2Mel(nn.Module):
         else:
             return mgc + self.postnet(mgc), stop, att
 
-
     def forward(self, input, gs_mgc=None, token=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
@@ -175,7 +174,7 @@ class Text2Mel(nn.Module):
                 a = [(0.4 / (self.mel2style.num_gst - 1)) for _ in range(self.mel2style.num_gst)]
                 a[token] = 0.6
 
-            a = torch.tensor(a, device=self.dec2hid[0].linear_layer.weight.device.type,
+            a = torch.tensor(a, device=self._get_device(),  # self.dec2hid[0].linear_layer.weight.device.type,
                              dtype=torch.float).unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
             style = torch.bmm(a, unfolded_gst).squeeze(1)
         index = 0
@@ -382,7 +381,8 @@ def _eval(text2mel, dataset, params, loss_func):
             prg = step * params.batch_size
             sys.stdout.flush()
             sys.stderr.flush()
-            x, mgc = dataset.get_batch(batch_size=min(params.batch_size, len(dataset._dataset.files) - prg))
+            x, mgc = dataset.get_batch(batch_size=min(params.batch_size, len(dataset._dataset.files) - prg),
+                                       device=params.device)
             pred_mgc, pred_stop, pred_att = text2mel(x, gs_mgc=mgc)
             target_mgc, target_stop, target_size = _make_batch(mgc, params.pframes,
                                                                device=params.device)
