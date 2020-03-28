@@ -60,10 +60,10 @@ class Text2Mel(nn.Module):
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
 
         self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
-        if len(encodings.speaker2int) > 1:
-            self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
-        else:
-            self.speaker_emb = None
+        # if len(encodings.speaker2int) > 1:
+        self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
+        # else:
+        #    self.speaker_emb = None
         self.postnet = PostNet(num_mels=mgc_size)
 
     def raw_forward(self, x, speaker, gst):
