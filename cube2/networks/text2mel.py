@@ -60,10 +60,10 @@ class Text2Mel(nn.Module):
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
 
         self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
-        if len(encodings.speaker2int) > 1:
-            self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
-        else:
-            self.speaker_emb = None
+        # if len(encodings.speaker2int) > 1:
+        self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
+        # else:
+        #    self.speaker_emb = None
         self.postnet = PostNet(num_mels=mgc_size)
 
     def raw_forward(self, x, speaker, gst):
@@ -133,7 +133,8 @@ class Text2Mel(nn.Module):
             m_proj = torch.dropout(torch.tanh(self.mgc_proj(last_mgc)), 0.5, True)
 
             decoder_input = torch.cat((att, m_proj), dim=1)
-            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
+            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0),
+                                                          hx=torch.dropout(decoder_hidden, self.training))
             # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
 
@@ -251,7 +252,7 @@ class Text2Mel(nn.Module):
                         stop = encoder_output.shape[1] - 1
                     enc_out_list.append(encoder_output[iBatch, int(start):int(stop + 1), :].unsqueeze(0))
                 enc_out = torch.cat(enc_out_list, dim=0)
-                att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), enc_out)
+                att_vec, att = self.att(torch.dropout(decoder_hidden[-1][-1].unsqueeze(0), 0.5, self.training), enc_out)
             else:
                 if self.training:
                     att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
@@ -275,7 +276,8 @@ class Text2Mel(nn.Module):
             m_proj = torch.dropout(torch.tanh(self.mgc_proj(last_mgc)), 0.5, True)
 
             decoder_input = torch.cat((att, m_proj), dim=1)
-            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=decoder_hidden)
+            decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=(
+            torch.dropout(decoder_hidden[0], 0.5, self.training), torch.dropout(decoder_hidden[1], 0.5, self.training)))
             # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
 
