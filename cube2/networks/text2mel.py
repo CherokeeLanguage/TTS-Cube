@@ -84,7 +84,7 @@ class Text2Mel(nn.Module):
 
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
-        encoder_output = encoder_output.permute(1, 0, 2)
+        encoder_output = torch.dropout(encoder_output.permute(1, 0, 2), 0.5, self.training)
         style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
         x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
 
@@ -201,7 +201,7 @@ class Text2Mel(nn.Module):
         x, x_speaker = self._make_input(input)
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
-        encoder_output = encoder_output.permute(1, 0, 2)
+        encoder_output = torch.dropout(encoder_output.permute(1, 0, 2), 0.5, self.training)
         style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
         x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
 
@@ -277,7 +277,8 @@ class Text2Mel(nn.Module):
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=(
-            torch.dropout(decoder_hidden[0], 0.5, self.training), torch.dropout(decoder_hidden[1], 0.5, self.training)))
+                torch.dropout(decoder_hidden[0], 0.5, self.training),
+                torch.dropout(decoder_hidden[1], 0.5, self.training)))
             # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
 
