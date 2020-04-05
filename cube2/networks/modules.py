@@ -222,6 +222,37 @@ class Mel2Style(nn.Module):
         return '{0}:{1}'.format(self.gst.weight.device.type, str(self.gst.weight.device.index))
 
 
+class AttentionCNN(nn.Module):
+    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100):
+        super(AttentionCNN, self).__init__()
+
+        self.enc_hid_dim = enc_hid_dim
+        self.dec_hid_dim = dec_hid_dim
+
+        self.attn = ConvNorm(enc_hid_dim * 2 + dec_hid_dim, att_proj_size, kernel_size=3,
+                             w_init_gain='tanh')  # LinearNorm((enc_hid_dim * 2) + dec_hid_dim, att_proj_size, w_init_gain='tanh')
+        self.v = nn.Parameter(torch.rand(att_proj_size))
+
+    def forward(self, hidden, encoder_outputs):
+        # encoder_outputs = encoder_outputs.permute(1, 0, 2)
+        batch_size = encoder_outputs.shape[0]
+        src_len = encoder_outputs.shape[1]
+        hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
+
+        energy = torch.dropout(
+            torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2).permute(0, 2, 1)).permute(0, 2, 1)), 0.5,
+            self.training)
+        energy = energy.permute(0, 2, 1)
+        v = self.v.repeat(batch_size, 1).unsqueeze(1)
+        attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)
+
+        a = attention.unsqueeze(1)
+        weighted = torch.bmm(a, encoder_outputs)
+        weighted = weighted.squeeze(1)
+
+        return attention, weighted
+
+
 class Attention(nn.Module):
     def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100):
         super(Attention, self).__init__()
@@ -238,7 +269,7 @@ class Attention(nn.Module):
         src_len = encoder_outputs.shape[1]
         hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
 
-        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
+        energy = torch.dropout(torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2))), 0.5, self.training)
         energy = energy.permute(0, 2, 1)
         v = self.v.repeat(batch_size, 1).unsqueeze(1)
         attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)

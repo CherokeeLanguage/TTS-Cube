@@ -22,7 +22,7 @@ import json
 import random
 
 sys.path.append('')
-from cube2.networks.modules import Attention, PostNet, Mel2Style, ConvNorm, LinearNorm
+from cube2.networks.modules import Attention, AttentionCNN, PostNet, Mel2Style, ConvNorm, LinearNorm
 from os.path import exists
 
 
@@ -59,12 +59,19 @@ class Text2Mel(nn.Module):
                                          nn.Sigmoid())
         self.mel2style = Mel2Style(num_mgc=mgc_size, gst_dim=self.STYLE_EMB_SIZE, num_gst=self.NUM_GST)
 
-        self.att = Attention(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
+        self.att = AttentionCNN(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
         # if len(encodings.speaker2int) > 1:
         self.speaker_emb = nn.Embedding(len(encodings.speaker2int), self.STYLE_EMB_SIZE)
         # else:
         #    self.speaker_emb = None
         self.postnet = PostNet(num_mels=mgc_size)
+
+        # self.load('data/text2mel.last')
+        # del self.att
+        # self.att = AttentionCNN(encoder_size + self.STYLE_EMB_SIZE // 2, decoder_size)
+        # self.save('data/text2mel.last')
+        # import sys
+        # sys.exit(0)
 
     def raw_forward(self, x, speaker, gst):
         speaker_id = self.encodings.speaker2int[speaker]
@@ -201,7 +208,7 @@ class Text2Mel(nn.Module):
         x, x_speaker = self._make_input(input)
         lstm_input = x  # self.char_conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         encoder_output, encoder_hidden = self.encoder(lstm_input.permute(1, 0, 2))
-        encoder_output = torch.dropout(encoder_output.permute(1, 0, 2), 0.5, self.training)
+        encoder_output = encoder_output.permute(1, 0, 2)
         style = style.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
         x_speaker = x_speaker.unsqueeze(1).repeat(1, encoder_output.shape[1], 1)
 
