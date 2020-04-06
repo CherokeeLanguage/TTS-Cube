@@ -83,18 +83,60 @@ class Text2MelSimplified(nn.Module):
 
             att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output[:, start:stop, :])
             new_index = torch.argmax(att_vec).detach().squeeze().cpu() + start
-            if new_index <= max_index:
-                wait_count += 1
-                if wait_count == 10:
-                    att = encoder_output[:, max_index + 1, :]
-                    max_index += 1
-            else:
-                wait_count = 0
-            if new_index > max_index and new_index - max_index < 4:
+            if max_index < new_index:
                 max_index = new_index
+            # heal = False
+            #
+            # if torch.max(att_vec) < 0.4:
+            #     max_index = min([max_index + 1, encoder_output.shape[1] - 1])
+            #     new_index = torch.tensor(max_index, dtype=torch.long)
+            #     heal = True
+            #
+            # if new_index - max_index > 3:
+            #     new_index = torch.tensor(max_index + 1, dtype=torch.long)
+            #     heal = True
+            # elif new_index > max_index:
+            #     max_index = new_index
+            # if new_index < max_index - 3:
+            #     new_index = torch.tensor(max_index, dtype=torch.long)
+            #     heal = True
+            #
+            # if new_index == max_index:
+            #     wait_count += 1
+            # else:
+            #     wait_count = 0
+            #
+            # if wait_count == 10:
+            #     wait_count = 0
+            #     max_index = min([max_index + 1, encoder_output.shape[1] - 1])
+            #     new_index = torch.tensor(max_index, dtype=torch.long)
+            #     heal = True
+            #
+            # if heal:
+            #     att = encoder_output[:, new_index, :]
+            # if torch.max(att_vec) < 0.8:
+            #     new_index = torch.scalar_tensor(max_index, dtype=torch.long)
+            #     att = encoder_output[:, max_index, :]
+            # if new_index <= max_index:
+            #     if new_index < max_index:
+            #         att = encoder_output[:, max_index, :]
+            #     new_index = torch.scalar_tensor(max_index, dtype=torch.long)
+            #     wait_count += 1
+            #     if wait_count == 3:
+            #         att = encoder_output[:, max_index + 1, :]
+            #         max_index += 1
+            # else:
+            #     wait_count = 0
+            # if new_index > max_index and new_index - max_index < 4:
+            #     max_index = new_index
+            # else:
+            #     new_index = torch.scalar_tensor(max_index + 1, dtype=torch.long)
+            #     att = encoder_output[:, max_index + 1, :]
+            #     max_index += 1
+
             last_index = new_index
 
-            if last_index >= encoder_output.shape[1] - 2:
+            if last_index >= encoder_output.shape[1] - 3:
                 stationary += 1
             if stationary == 4:
                 break
