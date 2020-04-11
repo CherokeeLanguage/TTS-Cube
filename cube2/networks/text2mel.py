@@ -485,7 +485,7 @@ def _eval(text2mel, dataset, params, loss_func):
 
             l_tar_mgc = torch.cat(lst_gs, dim=0)
             l_post_mgc = torch.cat(lst_post_mgc, dim=0)
-            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) 
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             # if not params.disable_guided_attention:
             #     loss_comb = loss_comb + (pred_att * target_att).mean()
@@ -595,9 +595,9 @@ def _start_train(params):
     global_step = 0
 
     bce_loss = torch.nn.BCELoss()
-    abs_loss = torch.nn.L1Loss()
-    mse_loss = torch.nn.MSELoss()
-    loss_func = abs_loss
+    abs_loss = torch.nn.L1Loss(reduction='sum')
+    mse_loss = torch.nn.MSELoss(reduction='sum')
+    loss_func = mse_loss
     best_gloss = _eval(text2mel, devset, params, loss_func)
     sys.stdout.write('Devset loss={0}\n'.format(best_gloss))
     while patience_left > 0:
@@ -640,8 +640,8 @@ def _start_train(params):
             l_tar_mgc = torch.cat(lst_gs, dim=0)
             l_pre_mgc = torch.cat(lst_pre_mgc, dim=0)
             l_post_mgc = torch.cat(lst_post_mgc, dim=0)
-            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) + \
-                        loss_func(l_pre_mgc.view(-1), l_tar_mgc.view(-1))  
+            loss_comb = loss_func(l_post_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0]) + \
+                        loss_func(l_pre_mgc.view(-1), l_tar_mgc.view(-1)) / (l_tar_mgc.shape[0])
 
             loss_comb = loss_comb + bce_loss(pred_stop.view(-1), target_stop.view(-1))
             # if not params.disable_guided_attention:
