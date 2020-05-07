@@ -223,9 +223,10 @@ class Mel2Style(nn.Module):
 
 
 class AttentionCNN(nn.Module):
-    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100):
+    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100, dropout_prob=0.1):
         super(AttentionCNN, self).__init__()
 
+        self.dropout_prob = dropout_prob
         self.enc_hid_dim = enc_hid_dim
         self.dec_hid_dim = dec_hid_dim
 
@@ -240,7 +241,8 @@ class AttentionCNN(nn.Module):
         hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
 
         energy = torch.dropout(
-            torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2).permute(0, 2, 1)).permute(0, 2, 1)), 0.5,
+            torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2).permute(0, 2, 1)).permute(0, 2, 1)),
+            self.dropout_prob,
             self.training)
         energy = energy.permute(0, 2, 1)
         v = self.v.repeat(batch_size, 1).unsqueeze(1)
@@ -254,9 +256,9 @@ class AttentionCNN(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100):
+    def __init__(self, enc_hid_dim, dec_hid_dim, att_proj_size=100, dropout_prob=0.1):
         super(Attention, self).__init__()
-
+        self.dropout_prob = dropout_prob
         self.enc_hid_dim = enc_hid_dim
         self.dec_hid_dim = dec_hid_dim
 
@@ -269,7 +271,8 @@ class Attention(nn.Module):
         src_len = encoder_outputs.shape[1]
         hidden = hidden.permute(1, 0, 2).repeat(1, src_len, 1)
 
-        energy = torch.dropout(torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2))), 0.5, self.training)
+        energy = torch.dropout(torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2))), self.dropout_prob,
+                               self.training)
         energy = energy.permute(0, 2, 1)
         v = self.v.repeat(batch_size, 1).unsqueeze(1)
         attention = torch.softmax(torch.bmm(v, energy).squeeze(1), dim=1)

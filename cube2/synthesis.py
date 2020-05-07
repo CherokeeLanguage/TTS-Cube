@@ -92,7 +92,10 @@ def synthesize(params):
         else:
             text = [c for c in open(params.txt_file, encoding='utf-8').read().strip()]
         start_text2mel = time.time()
-        mgc, stop, att = text2mel([[params.speaker, text]])  # , token=params.token)
+        mgc, stop, att = text2mel([[params.speaker, text]])
+        # mgc, stop, att = text2mel([[params.speaker, text]],
+        #                           style=[8.4838e-03, 4.4684e-03, 4.7292e-02, 4.9457e-01, 3.3117e-02, 2.5645e-01,
+        #                                  1.0296e-01, 6.4614e-06, 5.8084e-03, 4.6852e-02])  # , token=params.token)
         stop_text2mel = time.time()
 
     mgc, att = _trim(mgc[0].detach().cpu().numpy(), att[0].detach().cpu().numpy(),

@@ -168,7 +168,7 @@ class Text2Mel(nn.Module):
         else:
             return mgc + self.postnet(mgc), stop, att
 
-    def forward(self, input, gs_mgc=None, token=None, x_lengths=None, y_lengths=None):
+    def forward(self, input, gs_mgc=None, token=None, x_lengths=None, y_lengths=None, style=None):
         if gs_mgc is not None:
             max_len = max([mgc.shape[0] for mgc in gs_mgc])
             # gs_mgc = torch.tensor(gs_mgc, dtype=self._get_device())
@@ -182,8 +182,6 @@ class Text2Mel(nn.Module):
 
             gs_mgc = torch.tensor(tmp, device=self._get_device(), dtype=torch.float)
             gsts, style = self.mel2style(gs_mgc)
-            # from ipdb import set_trace
-            # set_trace()
         else:  # uniform distribution of style tokens
             batch_size = len(input)
             unfolded_gst = torch.tensor([[i for i in range(self.mel2style.num_gst)] for _ in range(batch_size)],
@@ -195,6 +193,8 @@ class Text2Mel(nn.Module):
                 # a = [0.0286, 0.0588, 0.1416, 0.1549, 0.0916, 0.0616, 0.1527, 0.0614, 0.1280,
                 #      0.1208]
                 a = [0 for _ in range(self.mel2style.num_gst)]
+                if style is not None:
+                    a = style
                 # a = [1.0 / self.mel2style.num_gst for _ in range(self.mel2style.num_gst)]
             else:
                 a = [(0.4 / (self.mel2style.num_gst - 1)) for _ in range(self.mel2style.num_gst)]
@@ -238,6 +238,7 @@ class Text2Mel(nn.Module):
         prev_att_vec = None
         delta_att = 7
         last_att = 0
+        dropout_prob = 0.1
         while True:
             if x_lengths is not None:
 
@@ -259,7 +260,8 @@ class Text2Mel(nn.Module):
                         stop = encoder_output.shape[1] - 1
                     enc_out_list.append(encoder_output[iBatch, int(start):int(stop + 1), :].unsqueeze(0))
                 enc_out = torch.cat(enc_out_list, dim=0)
-                att_vec, att = self.att(torch.dropout(decoder_hidden[-1][-1].unsqueeze(0), 0.5, self.training), enc_out)
+                att_vec, att = self.att(torch.dropout(decoder_hidden[-1][-1].unsqueeze(0), dropout_prob, self.training),
+                                        enc_out)
             else:
                 if self.training:
                     att_vec, att = self.att(decoder_hidden[-1][-1].unsqueeze(0), encoder_output)
@@ -284,8 +286,8 @@ class Text2Mel(nn.Module):
 
             decoder_input = torch.cat((att, m_proj), dim=1)
             decoder_output, decoder_hidden = self.decoder(decoder_input.unsqueeze(0), hx=(
-                torch.dropout(decoder_hidden[0], 0.5, self.training),
-                torch.dropout(decoder_hidden[1], 0.5, self.training)))
+                torch.dropout(decoder_hidden[0], dropout_prob, self.training),
+                torch.dropout(decoder_hidden[1], dropout_prob, self.training)))
             # attn_output, attn_hidden = self.attention_rnn(decoder_input.unsqueeze(0), hx=attn_hidden)
             decoder_output = decoder_output.permute(1, 0, 2)
 
