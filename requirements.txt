@@ -4,5 +4,5 @@ scipy==1.1.0
 pysptk==0.1.11
 Cython==0.27.3
 Pillow
-Flask==1.0.2
+Flask==2.3.2
 #dynet==2.1
